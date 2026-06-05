@@ -41,3 +41,5 @@ bytemuck = { version = "1", features = ["derive"] }
 wgpu = "29"
 egui = "0.34"
 egui-wgpu = { version = "0.34", default-features = false }
+# Headless AccessKit-tree + interaction testing for the egui adapter (dev-dep).
+egui_kittest = "0.34"

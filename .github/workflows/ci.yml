@@ -62,4 +62,6 @@ jobs:
           VK_ICD_FILENAMES: /usr/share/vulkan/icd.d/lvp_icd.json
           WGPU_BACKEND: vulkan
         # --test-threads=1: lavapipe is not reliably parallel-safe (LESSONS).
-        run: cargo test -p backdrop-blur-wgpu --features image-snapshots -- --test-threads=1
+        run: |
+          cargo test -p backdrop-blur-wgpu --features image-snapshots -- --test-threads=1
+          cargo test -p backdrop-blur-egui --features image-snapshots -- --test-threads=1

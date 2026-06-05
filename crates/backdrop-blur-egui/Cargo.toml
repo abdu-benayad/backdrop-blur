@@ -1,0 +1,28 @@
+[package]
+name = "backdrop-blur-egui"
+version = "0.1.0"
+description = "egui adapter for backdrop-blur: drives the own-loop (egui-wgpu) frosted-glass path — render to an offscreen intermediate, blur a region, composite the frosted surface into the target."
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[dependencies]
+backdrop-blur-core = { workspace = true }
+backdrop-blur-wgpu = { workspace = true }
+egui = { workspace = true }
+# default-features = false keeps winit OUT of the library — only the example pulls winit.
+egui-wgpu = { workspace = true }
+wgpu = { workspace = true }
+
+[dev-dependencies]
+egui_kittest = { workspace = true }
+pollster = "0.4"
+
+[features]
+# Gates the GPU tier: a headless lavapipe test that drives real egui-wgpu rendering + blur and
+# reads the frosted result back. The default `cargo test` runs the GPU-free wiring tests only.
+image-snapshots = []
