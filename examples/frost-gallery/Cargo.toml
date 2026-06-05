@@ -1,0 +1,14 @@
+[package]
+name = "frost-gallery"
+version = "0.0.0"
+edition = "2024"
+publish = false
+description = "Headless frost gallery: renders the own-loop demo scene through OwnLoopRenderer on a software (lavapipe) device and writes PNGs — a viewable showcase of the blur with no display. Excluded from the workspace (its own package), like the winit example."
+
+[dependencies]
+backdrop-blur-egui = { path = "../../crates/backdrop-blur-egui" }
+egui = "0.34"
+egui-wgpu = { version = "0.34", default-features = false }
+wgpu = "29"
+pollster = "0.4"
+png = "0.17"
