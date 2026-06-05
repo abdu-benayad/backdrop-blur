@@ -45,3 +45,21 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: build on the declared MSRV
         run: cargo build --workspace
+
+  gpu:
+    name: gated GPU tier (lavapipe)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.95.0
+      - uses: Swatinem/rust-cache@v2
+      - name: install lavapipe (software Vulkan rasterizer)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y mesa-vulkan-drivers
+      - name: gated GPU readback + snapshot tests
+        env:
+          VK_ICD_FILENAMES: /usr/share/vulkan/icd.d/lvp_icd.json
+          WGPU_BACKEND: vulkan
+        # --test-threads=1: lavapipe is not reliably parallel-safe (LESSONS).
+        run: cargo test -p backdrop-blur-wgpu --features image-snapshots -- --test-threads=1

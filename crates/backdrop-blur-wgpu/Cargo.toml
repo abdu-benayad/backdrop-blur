@@ -1,0 +1,28 @@
+[package]
+name = "backdrop-blur-wgpu"
+version = "0.1.0"
+description = "wgpu backend for backdrop-blur: a safe, WGSL implementation of the frosted-glass seam (separable Gaussian now; dual-Kawase to follow)."
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[dependencies]
+backdrop-blur-core = { workspace = true }
+wgpu = { workspace = true }
+# Derives only — `#[derive(Pod, Zeroable)]`, never `unsafe impl` — so the crate keeps
+# `#![forbid(unsafe_code)]`. The GPU-uniform structs live here (not core), per DESIGN S2.
+bytemuck = { workspace = true }
+
+[dev-dependencies]
+# Block on wgpu's async adapter/device futures in the gated GPU tests.
+pollster = "0.4"
+
+[features]
+# Gates the GPU tier: tests that build a `wgpu::Device` run only with this feature, on a
+# lavapipe host. The default `cargo test` compiles the crate and runs the pure cache-key /
+# uniform-layout tests, spinning up no GPU context (the repo's portability invariant).
+image-snapshots = []
