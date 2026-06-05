@@ -1,0 +1,10 @@
+# Build artifacts
+/target
+**/target
+
+# The winit example is a separate workspace; ignore its lockfile churn is NOT desired —
+# keep its Cargo.lock tracked for reproducible example builds. Only target/ is ignored.
+
+# Editor / OS noise
+*.swp
+.DS_Store

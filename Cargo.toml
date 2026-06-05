@@ -1,0 +1,38 @@
+# Virtual-manifest workspace (STRUCTURE §1/§6). No root package — the crates live
+# under `crates/`. The winit example (`examples/egui-wgpu-panel`) is deliberately a
+# SEPARATE workspace (added to `exclude` when it lands in step 3c) so that
+# `cargo clippy --workspace --all-targets` never pulls winit and the default
+# verification tier stays portable to any machine, GPU or not (IMPL §8, M2).
+
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+
+[workspace.package]
+edition = "2024"
+# MSRV = max(1.85 edition-2024 floor, 1.87 wgpu 29, 1.92 egui/egui-wgpu 0.34) = 1.92.
+# The `rust-toolchain.toml` pins the dev/CI toolchain; a dedicated CI job verifies this floor.
+rust-version = "1.92"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/abdu-benayad/backdrop-blur"
+authors = ["Abdu Benayad <abdu.benayad@gmail.com>"]
+keywords = ["blur", "backdrop", "frosted-glass", "vibrancy", "gpu"]
+categories = ["graphics", "gui", "rendering"]
+
+[workspace.dependencies]
+# Internal crates — path + version so they are publishable as a set.
+backdrop-blur-core = { path = "crates/backdrop-blur-core", version = "0.1.0" }
+backdrop-blur-wgpu = { path = "crates/backdrop-blur-wgpu", version = "0.1.0" }
+
+# Error model — thiserror 2 (structured variants, never a String error). Core forbids
+# unsafe and has no GPU dep, so it cannot name a backend error: BlurError carries a
+# boxed `dyn Error + Send + Sync` source (DESIGN §4.5).
+thiserror = "2"
+
+# GPU plumbing — pinned to exactly what the first consumer (abdu-egui-ui) resolves,
+# so eventual integration is friction-free. No `glow` pin: the glow backend is deferred
+# past v1 (DESIGN §0, IMPL M3) and a dead pin would only invite drift.
+bytemuck = { version = "1", features = ["derive"] }
+wgpu = "29"
+egui = "0.34"
+egui-wgpu = { version = "0.34", default-features = false }

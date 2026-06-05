@@ -1,0 +1,47 @@
+name: CI
+
+# Verification has two tiers (IMPL §8):
+#   - default tier  — runs on ANY runner, spins up zero GPU contexts (the repo invariant
+#                     that the default `cargo test` builds and runs GPU or not).
+#   - gated GPU tier — lavapipe software Vulkan; added in step 2 with `backdrop-blur-wgpu`.
+# The winit example builds in its own job (added in step 3c); it never enters the portable
+# `--workspace --all-targets` loop, which is why that loop stays winit-free and portable.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  default-tier:
+    name: default tier (any runner, GPU-free)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.95.0
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: format
+        run: cargo fmt --all -- --check
+      - name: clippy (libraries + their tests; no library pulls winit)
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: test (core unit tests + egui fake-backend wiring test)
+        run: cargo test --workspace
+      - name: build
+        run: cargo build --workspace
+
+  msrv:
+    name: MSRV 1.92 builds
+    runs-on: ubuntu-latest
+    env:
+      RUSTUP_TOOLCHAIN: "1.92.0" # override rust-toolchain.toml's dev-pin for this job
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.92.0
+      - uses: Swatinem/rust-cache@v2
+      - name: build on the declared MSRV
+        run: cargo build --workspace

@@ -1,0 +1,8 @@
+# Pin the dev/CI toolchain for reproducible builds. This is the *build* toolchain, not
+# the MSRV: the declared MSRV is `rust-version = "1.92"` in the workspace manifest, and a
+# dedicated CI job (.github/workflows/ci.yml) verifies the crate still builds on 1.92.
+# Pinned to the installed stable so the local verification loop never depends on fetching
+# a second toolchain. Bump deliberately.
+[toolchain]
+channel = "1.95.0"
+components = ["rustfmt", "clippy"]
