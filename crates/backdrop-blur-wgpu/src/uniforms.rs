@@ -83,6 +83,24 @@ impl CompositeParams {
     }
 }
 
+/// Mirrors `KawaseParams` in `shaders/{downsample,upsample}.wgsl` (16 bytes). The half-texel
+/// sampling offset for one dual-Kawase pass.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Pod, Zeroable)]
+pub(crate) struct KawaseParams {
+    pub halfpixel: [f32; 2],
+    pub _pad: [f32; 2],
+}
+
+impl KawaseParams {
+    pub(crate) fn new(halfpixel: [f32; 2]) -> Self {
+        Self {
+            halfpixel,
+            _pad: [0.0; 2],
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -111,6 +129,12 @@ mod tests {
         assert_eq!(offset_of!(CompositeParams, backdrop_uv_scale), 40);
         assert_eq!(offset_of!(CompositeParams, corner_radius_px), 48);
         assert_eq!(offset_of!(CompositeParams, encode_srgb), 52);
+    }
+
+    #[test]
+    fn kawase_params_layout_matches_wgsl() {
+        assert_eq!(size_of::<KawaseParams>(), 16);
+        assert_eq!(offset_of!(KawaseParams, halfpixel), 0);
     }
 
     #[test]

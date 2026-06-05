@@ -1,9 +1,10 @@
 //! `backdrop-blur-wgpu` — the wgpu backend for [`backdrop_blur_core`]'s frosted-glass seam.
 //!
-//! It implements [`BackdropBlur`] with a safe, WGSL pipeline: a separable Gaussian blur (the
-//! proven first-pixel path; the dual-Kawase down/up filter is a later, gated increment) followed
-//! by a tinted, rounded-rect-masked composite. The crate is `#![forbid(unsafe_code)]`; the only
-//! place that *could* want `unsafe` — the GPU-uniform `Pod` impls — uses bytemuck derives.
+//! It implements [`BackdropBlur`] with a safe, WGSL pipeline: a **separable Gaussian** blur for
+//! small radii and **dual-Kawase** (down/up-sample, the production-compositor algorithm) for large
+//! radii, selected by a radius threshold, followed by a tinted, rounded-rect-masked composite. The
+//! crate is `#![forbid(unsafe_code)]`; the only place that *could* want `unsafe` — the GPU-uniform
+//! `Pod` impls — uses bytemuck derives.
 //!
 //! # What the host provides
 //!
@@ -35,9 +36,10 @@ mod cache;
 mod uniforms;
 
 use cache::{
-    PingPongKey, SCRATCH_FORMAT, backdrop_uv_remap, composite_encode_srgb, resolve_gaussian,
+    PingPongKey, SCRATCH_FORMAT, backdrop_uv_remap, composite_encode_srgb, kawase_halfpixel,
+    kawase_level_size, resolve_gaussian, resolve_kawase_levels, use_dual_kawase,
 };
-use uniforms::{CompositeParams, GaussianParams};
+use uniforms::{CompositeParams, GaussianParams, KawaseParams};
 
 /// The color space of the backdrop the host hands in. egui renders **gamma-encoded** regardless
 /// of texture format (egui#3168), so its intermediate is [`GammaSrgb`](Self::GammaSrgb) and must
@@ -64,38 +66,60 @@ pub struct SourceView {
     pub color_space: SourceColorSpace,
 }
 
-/// The owned, per-call handle from `prepare` to `record`: which scratch chain and composite
-/// pipeline to use, plus the three bind groups (which already hold their textures/uniforms via
-/// wgpu's internal refcounting). `generation` stamps the prepare so `record` can debug-assert
-/// the v1 serial prepare→record contract (a stale handle would alias clobbered scratch — K1).
+/// The owned, per-call handle from `prepare` to `record`: the resolved blur (which algorithm +
+/// its bind groups), the composite bind group, and `generation` (so `record` can debug-assert the
+/// serial prepare→record contract — a stale handle would alias clobbered scratch, K1). The bind
+/// groups already hold their textures/uniforms via wgpu's internal refcounting.
 pub struct WgpuPrepared {
-    key: PingPongKey,
     target_format: wgpu::TextureFormat,
     generation: u64,
-    horizontal_bind: wgpu::BindGroup,
-    vertical_bind: wgpu::BindGroup,
+    blur: PreparedBlur,
     composite_bind: wgpu::BindGroup,
 }
 
-/// One ping-pong scratch chain: two `Rgba16Float` texture views at the clipped source-region
-/// size. The horizontal pass writes A (`views[0]`), the vertical pass writes B (`views[1]`), the
-/// composite samples B. Only the views are stored — a `wgpu::TextureView` keeps its parent
-/// texture alive by refcount, so the textures need no separate field.
+/// The resolved blur for one surface: either the separable Gaussian (small radius) or dual-Kawase
+/// (large radius). Each variant carries the bind groups its `record` passes replay; the keyed
+/// scratch they target lives in [`WgpuBlur`].
+enum PreparedBlur {
+    /// Horizontal then vertical Gaussian into the 2-texture ping-pong; composite samples B.
+    Gaussian {
+        key: PingPongKey,
+        horizontal_bind: wgpu::BindGroup,
+        vertical_bind: wgpu::BindGroup,
+    },
+    /// Prefilter (decode+remap into mip 0) → `N` downsamples → `N` upsamples back to mip 0;
+    /// composite samples mip 0.
+    DualKawase {
+        key: PingPongKey,
+        prefilter_bind: wgpu::BindGroup,
+        down_binds: Vec<wgpu::BindGroup>,
+        up_binds: Vec<wgpu::BindGroup>,
+    },
+}
+
+/// The two same-size `Rgba16Float` ping-pong views for the Gaussian path: the horizontal pass
+/// writes A (`views[0]`), the vertical pass writes B (`views[1]`), the composite samples B. Only
+/// the views are stored — a `wgpu::TextureView` keeps its parent texture alive by refcount.
 struct ScratchChain {
     views: [wgpu::TextureView; 2],
 }
 
 /// The wgpu implementation of [`BackdropBlur`]. Holds the fixed pipeline machinery (bind-group
-/// layout, sampler, Gaussian pipeline) and the per-`(size)` scratch + per-target-format composite
-/// caches, so repeated frosted surfaces reuse them.
+/// layout, sampler, Gaussian/downsample/upsample pipelines) and the per-`(size)` scratch
+/// (Gaussian ping-pong + dual-Kawase pyramid) + per-target-format composite caches, so repeated
+/// frosted surfaces reuse them.
 pub struct WgpuBlur {
     pipeline_layout: wgpu::PipelineLayout,
     bind_group_layout: wgpu::BindGroupLayout,
     sampler: wgpu::Sampler,
     gaussian_pipeline: wgpu::RenderPipeline,
+    downsample_pipeline: wgpu::RenderPipeline,
+    upsample_pipeline: wgpu::RenderPipeline,
     composite_shader: wgpu::ShaderModule,
     composite_pipelines: HashMap<wgpu::TextureFormat, wgpu::RenderPipeline>,
     scratch: HashMap<PingPongKey, ScratchChain>,
+    /// Dual-Kawase mip pyramids: `N + 1` decreasing-size views, level 0 = full clipped size.
+    pyramids: HashMap<PingPongKey, Vec<wgpu::TextureView>>,
     /// Bumped each `prepare`; stamped into [`WgpuPrepared`] so `record` can detect a stale handle.
     generation: u64,
 }
@@ -157,13 +181,33 @@ impl WgpuBlur {
 
         let gaussian_shader =
             device.create_shader_module(wgpu::include_wgsl!("shaders/gaussian.wgsl"));
+        let downsample_shader =
+            device.create_shader_module(wgpu::include_wgsl!("shaders/downsample.wgsl"));
+        let upsample_shader =
+            device.create_shader_module(wgpu::include_wgsl!("shaders/upsample.wgsl"));
         let composite_shader =
             device.create_shader_module(wgpu::include_wgsl!("shaders/composite.wgsl"));
 
+        // All blur passes write the internal scratch format with no blend; only the composite
+        // matches the caller's format and blends.
         let gaussian_pipeline = build_pipeline(
             device,
             &pipeline_layout,
             &gaussian_shader,
+            SCRATCH_FORMAT,
+            None,
+        );
+        let downsample_pipeline = build_pipeline(
+            device,
+            &pipeline_layout,
+            &downsample_shader,
+            SCRATCH_FORMAT,
+            None,
+        );
+        let upsample_pipeline = build_pipeline(
+            device,
+            &pipeline_layout,
+            &upsample_shader,
             SCRATCH_FORMAT,
             None,
         );
@@ -173,9 +217,12 @@ impl WgpuBlur {
             bind_group_layout,
             sampler,
             gaussian_pipeline,
+            downsample_pipeline,
+            upsample_pipeline,
             composite_shader,
             composite_pipelines: HashMap::new(),
             scratch: HashMap::new(),
+            pyramids: HashMap::new(),
             generation: 0,
         }
     }
@@ -184,38 +231,34 @@ impl WgpuBlur {
 // --- Internal resource management ---
 
 impl WgpuBlur {
-    /// Create the two scratch textures for `key` if not already cached.
+    /// Create the two Gaussian ping-pong textures for `key` if not already cached.
     fn ensure_scratch(&mut self, device: &wgpu::Device, key: PingPongKey) {
         if self.scratch.contains_key(&key) {
             return;
         }
-        let make = |label: &str| {
-            let texture = device.create_texture(&wgpu::TextureDescriptor {
-                label: Some(label),
-                size: wgpu::Extent3d {
-                    width: key.size[0],
-                    height: key.size[1],
-                    depth_or_array_layers: 1,
-                },
-                mip_level_count: 1,
-                sample_count: 1,
-                dimension: wgpu::TextureDimension::D2,
-                format: SCRATCH_FORMAT,
-                usage: wgpu::TextureUsages::TEXTURE_BINDING
-                    | wgpu::TextureUsages::RENDER_ATTACHMENT,
-                view_formats: &[],
-            });
-            // The view keeps the texture alive by refcount; the texture handle can drop here.
-            texture.create_view(&wgpu::TextureViewDescriptor::default())
-        };
-        let view_a = make("backdrop-blur scratch A");
-        let view_b = make("backdrop-blur scratch B");
+        let view_a = scratch_view(device, key.size, "backdrop-blur scratch A");
+        let view_b = scratch_view(device, key.size, "backdrop-blur scratch B");
         self.scratch.insert(
             key,
             ScratchChain {
                 views: [view_a, view_b],
             },
         );
+    }
+
+    /// Create the dual-Kawase mip pyramid for `key` (`key.levels` = `N` → `N + 1` views, level 0
+    /// at the full clipped size, level `i` halved) if not already cached.
+    fn ensure_pyramid(&mut self, device: &wgpu::Device, key: PingPongKey) {
+        if self.pyramids.contains_key(&key) {
+            return;
+        }
+        let views = (0..=key.levels)
+            .map(|level| {
+                let size = kawase_level_size(key.size, level);
+                scratch_view(device, size, "backdrop-blur kawase mip")
+            })
+            .collect();
+        self.pyramids.insert(key, views);
     }
 
     /// Build and cache the composite pipeline for `format` if not already present.
@@ -290,48 +333,22 @@ impl BackdropBlur for WgpuBlur {
                 format: format!("{target_format:?}"),
             })?;
         let decode_srgb = matches!(source.color_space, SourceColorSpace::GammaSrgb);
-
-        let kernel = resolve_gaussian(request.physical_blur_radius());
-        let key = PingPongKey {
-            size: clipped.size,
-            levels: 1,
-        };
-        self.ensure_scratch(device, key);
         self.ensure_composite_pipeline(device, target_format);
 
-        // Uniforms. Pass 1 maps the scratch onto the source sub-rect and decodes; pass 2 samples
-        // the full (linear) scratch A.
+        let radius = request.physical_blur_radius();
         let [source_w, source_h] = [source.size[0] as f32, source.size[1] as f32];
         let [clip_x, clip_y] = [clipped.origin[0] as f32, clipped.origin[1] as f32];
         let [clip_w, clip_h] = [clipped.size[0] as f32, clipped.size[1] as f32];
+        // Maps a full-scratch [0,1] onto the gamma source sub-rect (shared by the Gaussian
+        // horizontal pass and the dual-Kawase prefilter, both of which sample the source).
+        let remap_offset = [clip_x / source_w, clip_y / source_h];
+        let remap_scale = [clip_w / source_w, clip_h / source_h];
 
-        let horizontal = GaussianParams::new(
-            [clip_x / source_w, clip_y / source_h],
-            [clip_w / source_w, clip_h / source_h],
-            [1.0 / source_w, 1.0 / source_h],
-            [1.0, 0.0],
-            kernel.sigma,
-            kernel.tap_radius,
-            decode_srgb,
-        );
-        let vertical = GaussianParams::new(
-            [0.0, 0.0],
-            [1.0, 1.0],
-            [1.0 / clip_w, 1.0 / clip_h],
-            [0.0, 1.0],
-            kernel.sigma,
-            kernel.tap_radius,
-            false,
-        );
-
-        // Composite. The shader draws over the whole target and derives each fragment from
-        // @builtin(position), so it needs the target rect in framebuffer px. `backdrop_uv_*`
-        // maps target-rect uv onto scratch B, which holds the CLIPPED source region — identity
-        // when the source was fully in-bounds, an inset when it was clipped at an edge, so the
-        // frosted backdrop stays registered 1:1 with the content behind the glass.
+        // The composite is identical for both algorithms; only the texture it samples differs
+        // (Gaussian scratch B vs Kawase mip 0). `backdrop_uv_*` keeps a clipped source registered
+        // 1:1 with the content behind the glass.
         let (backdrop_uv_offset, backdrop_uv_scale) =
             backdrop_uv_remap(&request.source_region, &clipped);
-
         let mask = ResolvedMask::from_target(&request.target_rect, request.corner_radius);
         let tint = request.tint.color();
         let composite = CompositeParams::new(
@@ -349,46 +366,155 @@ impl BackdropBlur for WgpuBlur {
             mask.corner_radius_px,
             encode_srgb,
         );
-
-        let horizontal_buf = uniform_buffer(device, &horizontal, "backdrop-blur gaussian-h");
-        let vertical_buf = uniform_buffer(device, &vertical, "backdrop-blur gaussian-v");
         let composite_buf = uniform_buffer(device, &composite, "backdrop-blur composite");
 
-        // The scratch was just inserted by ensure_scratch; a miss here is an internal fault, so
-        // return the same typed error `record` uses rather than panicking (the contract is total).
-        let chain = self
-            .scratch
-            .get(&key)
-            .ok_or_else(|| BlurError::ResourceCreation {
-                stage: BlurStage::PingPongTexture,
-                source: "scratch chain missing immediately after ensure_scratch".into(),
-            })?;
-        let horizontal_bind = self.bind(
-            device,
-            &source.view,
-            &horizontal_buf,
-            "backdrop-blur h-bind",
-        );
-        let vertical_bind = self.bind(
-            device,
-            &chain.views[0],
-            &vertical_buf,
-            "backdrop-blur v-bind",
-        );
-        let composite_bind = self.bind(
-            device,
-            &chain.views[1],
-            &composite_buf,
-            "backdrop-blur composite-bind",
-        );
+        let (blur, composite_bind) = if use_dual_kawase(radius) {
+            let levels = resolve_kawase_levels(radius);
+            let key = PingPongKey {
+                size: clipped.size,
+                levels,
+            };
+            self.ensure_pyramid(device, key);
+            let n = levels as usize;
+
+            // Prefilter: source (gamma, sub-rect) → mip 0 (linear), via the Gaussian pipeline at
+            // radius 0 — a pure decode + remap, no blur.
+            let prefilter = GaussianParams::new(
+                remap_offset,
+                remap_scale,
+                [1.0 / source_w, 1.0 / source_h],
+                [1.0, 0.0],
+                0.5,
+                0,
+                decode_srgb,
+            );
+            let prefilter_buf =
+                uniform_buffer(device, &prefilter, "backdrop-blur kawase-prefilter");
+            // Per-pass half-pixel offsets: each pass samples a known mip level.
+            let down_bufs: Vec<wgpu::Buffer> = (0..n)
+                .map(|i| {
+                    let hp = kawase_halfpixel(kawase_level_size(clipped.size, i as u32));
+                    uniform_buffer(device, &KawaseParams::new(hp), "backdrop-blur kawase-down")
+                })
+                .collect();
+            let up_bufs: Vec<wgpu::Buffer> = (0..n)
+                .map(|j| {
+                    let hp = kawase_halfpixel(kawase_level_size(clipped.size, (n - j) as u32));
+                    uniform_buffer(device, &KawaseParams::new(hp), "backdrop-blur kawase-up")
+                })
+                .collect();
+
+            let pyramid = self
+                .pyramids
+                .get(&key)
+                .ok_or_else(|| BlurError::ResourceCreation {
+                    stage: BlurStage::PingPongTexture,
+                    source: "kawase pyramid missing immediately after ensure_pyramid".into(),
+                })?;
+            let prefilter_bind = self.bind(
+                device,
+                &source.view,
+                &prefilter_buf,
+                "backdrop-blur prefilter-bind",
+            );
+            let down_binds = down_bufs
+                .iter()
+                .enumerate()
+                .map(|(i, buf)| self.bind(device, &pyramid[i], buf, "backdrop-blur down-bind"))
+                .collect();
+            let up_binds = up_bufs
+                .iter()
+                .enumerate()
+                .map(|(j, buf)| self.bind(device, &pyramid[n - j], buf, "backdrop-blur up-bind"))
+                .collect();
+            let composite_bind = self.bind(
+                device,
+                &pyramid[0],
+                &composite_buf,
+                "backdrop-blur composite-bind",
+            );
+
+            (
+                PreparedBlur::DualKawase {
+                    key,
+                    prefilter_bind,
+                    down_binds,
+                    up_binds,
+                },
+                composite_bind,
+            )
+        } else {
+            let kernel = resolve_gaussian(radius);
+            let key = PingPongKey {
+                size: clipped.size,
+                levels: 1,
+            };
+            self.ensure_scratch(device, key);
+
+            // Pass 1 maps the scratch onto the source sub-rect and decodes; pass 2 samples the
+            // full (linear) scratch A.
+            let horizontal = GaussianParams::new(
+                remap_offset,
+                remap_scale,
+                [1.0 / source_w, 1.0 / source_h],
+                [1.0, 0.0],
+                kernel.sigma,
+                kernel.tap_radius,
+                decode_srgb,
+            );
+            let vertical = GaussianParams::new(
+                [0.0, 0.0],
+                [1.0, 1.0],
+                [1.0 / clip_w, 1.0 / clip_h],
+                [0.0, 1.0],
+                kernel.sigma,
+                kernel.tap_radius,
+                false,
+            );
+            let horizontal_buf = uniform_buffer(device, &horizontal, "backdrop-blur gaussian-h");
+            let vertical_buf = uniform_buffer(device, &vertical, "backdrop-blur gaussian-v");
+
+            let chain = self
+                .scratch
+                .get(&key)
+                .ok_or_else(|| BlurError::ResourceCreation {
+                    stage: BlurStage::PingPongTexture,
+                    source: "scratch chain missing immediately after ensure_scratch".into(),
+                })?;
+            let horizontal_bind = self.bind(
+                device,
+                &source.view,
+                &horizontal_buf,
+                "backdrop-blur h-bind",
+            );
+            let vertical_bind = self.bind(
+                device,
+                &chain.views[0],
+                &vertical_buf,
+                "backdrop-blur v-bind",
+            );
+            let composite_bind = self.bind(
+                device,
+                &chain.views[1],
+                &composite_buf,
+                "backdrop-blur composite-bind",
+            );
+
+            (
+                PreparedBlur::Gaussian {
+                    key,
+                    horizontal_bind,
+                    vertical_bind,
+                },
+                composite_bind,
+            )
+        };
 
         self.generation += 1;
         Ok(Some(WgpuPrepared {
-            key,
             target_format,
             generation: self.generation,
-            horizontal_bind,
-            vertical_bind,
+            blur,
             composite_bind,
         }))
     }
@@ -407,13 +533,6 @@ impl BackdropBlur for WgpuBlur {
             "record called with a stale Prepared (a newer prepare clobbered the shared scratch); \
              v1 requires serial prepare→record per surface (K1)"
         );
-        let chain = self
-            .scratch
-            .get(&prepared.key)
-            .ok_or_else(|| BlurError::ResourceCreation {
-                stage: BlurStage::PingPongTexture,
-                source: "scratch chain missing at record (prepare not called, or evicted)".into(),
-            })?;
         let composite_pipeline = self
             .composite_pipelines
             .get(&prepared.target_format)
@@ -422,22 +541,11 @@ impl BackdropBlur for WgpuBlur {
                 source: "composite pipeline missing at record".into(),
             })?;
 
-        // Pass 1 (horizontal): source → scratch A.
-        self.blur_pass(
-            encoder,
-            &chain.views[0],
-            &prepared.horizontal_bind,
-            "backdrop-blur h-pass",
-        );
-        // Pass 2 (vertical): scratch A → scratch B.
-        self.blur_pass(
-            encoder,
-            &chain.views[1],
-            &prepared.vertical_bind,
-            "backdrop-blur v-pass",
-        );
+        // Blur into the scratch (Gaussian ping-pong, or the dual-Kawase pyramid).
+        self.record_blur(encoder, &prepared.blur)?;
 
-        // Composite: scratch B → target, over the WHOLE attachment (default viewport). The
+        // Composite: the final blurred texture → target, over the WHOLE attachment (default
+        // viewport). The
         // rounded-rect coverage forms every edge, so straight sides are anti-aliased and an
         // off-target rect cannot trip scissor validation; coverage 0 outside the panel keeps
         // LoadOp::Load content untouched. (A scissor to the panel + AA margin is a future perf
@@ -476,14 +584,110 @@ fn uniform_buffer<T: bytemuck::Pod>(device: &wgpu::Device, value: &T, label: &st
     })
 }
 
+/// A `[width, height]` `SCRATCH_FORMAT` texture usable as both a sampled source and a render
+/// target, returned as a view (the view keeps the texture alive by refcount).
+fn scratch_view(device: &wgpu::Device, size: [u32; 2], label: &str) -> wgpu::TextureView {
+    let texture = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some(label),
+        size: wgpu::Extent3d {
+            width: size[0],
+            height: size[1],
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: SCRATCH_FORMAT,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::RENDER_ATTACHMENT,
+        view_formats: &[],
+    });
+    texture.create_view(&wgpu::TextureViewDescriptor::default())
+}
+
 impl WgpuBlur {
-    /// A full-attachment Gaussian pass (replace, no blend): clears then draws the oversized
-    /// triangle into `attachment` using `bind`.
+    /// Replay a prepared blur's passes into its scratch: the Gaussian horizontal/vertical, or the
+    /// dual-Kawase prefilter → downsamples → upsamples back to mip 0.
+    fn record_blur(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        blur: &PreparedBlur,
+    ) -> Result<(), BlurError> {
+        let missing = || BlurError::ResourceCreation {
+            stage: BlurStage::PingPongTexture,
+            source: "scratch missing at record (prepare not called, or evicted)".into(),
+        };
+        match blur {
+            PreparedBlur::Gaussian {
+                key,
+                horizontal_bind,
+                vertical_bind,
+            } => {
+                let chain = self.scratch.get(key).ok_or_else(missing)?;
+                self.blur_pass(
+                    encoder,
+                    &chain.views[0],
+                    horizontal_bind,
+                    &self.gaussian_pipeline,
+                    "backdrop-blur h-pass",
+                );
+                self.blur_pass(
+                    encoder,
+                    &chain.views[1],
+                    vertical_bind,
+                    &self.gaussian_pipeline,
+                    "backdrop-blur v-pass",
+                );
+            }
+            PreparedBlur::DualKawase {
+                key,
+                prefilter_bind,
+                down_binds,
+                up_binds,
+            } => {
+                let pyramid = self.pyramids.get(key).ok_or_else(missing)?;
+                let n = key.levels as usize;
+                // Prefilter: source (gamma, sub-rect) → mip 0 (linear), via the Gaussian pipeline
+                // at radius 0 (a pure decode + remap).
+                self.blur_pass(
+                    encoder,
+                    &pyramid[0],
+                    prefilter_bind,
+                    &self.gaussian_pipeline,
+                    "backdrop-blur kawase-prefilter",
+                );
+                // Downsample i: mip[i] → mip[i+1].
+                for (i, bind) in down_binds.iter().enumerate() {
+                    self.blur_pass(
+                        encoder,
+                        &pyramid[i + 1],
+                        bind,
+                        &self.downsample_pipeline,
+                        "backdrop-blur kawase-down",
+                    );
+                }
+                // Upsample j: mip[n-j] → mip[n-1-j], ending at mip 0.
+                for (j, bind) in up_binds.iter().enumerate() {
+                    self.blur_pass(
+                        encoder,
+                        &pyramid[n - 1 - j],
+                        bind,
+                        &self.upsample_pipeline,
+                        "backdrop-blur kawase-up",
+                    );
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// A full-attachment blur pass (replace, no blend): clears then draws the oversized triangle
+    /// into `attachment` using `bind` and `pipeline`.
     fn blur_pass(
         &self,
         encoder: &mut wgpu::CommandEncoder,
         attachment: &wgpu::TextureView,
         bind: &wgpu::BindGroup,
+        pipeline: &wgpu::RenderPipeline,
         label: &str,
     ) {
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -502,7 +706,7 @@ impl WgpuBlur {
             occlusion_query_set: None,
             multiview_mask: None,
         });
-        pass.set_pipeline(&self.gaussian_pipeline);
+        pass.set_pipeline(pipeline);
         pass.set_bind_group(0, bind, &[]);
         pass.draw(0..3, 0..1);
     }

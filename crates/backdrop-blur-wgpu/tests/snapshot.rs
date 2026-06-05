@@ -107,6 +107,129 @@ fn region(origin: [u32; 2], size: [u32; 2]) -> Region {
     }
 }
 
+/// A `DIM×DIM` Rgba8Unorm texture filled with a single opaque gray.
+fn flat_backdrop(device: &wgpu::Device, queue: &wgpu::Queue, gray: u8) -> wgpu::Texture {
+    let texture = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("flat backdrop"),
+        size: wgpu::Extent3d {
+            width: DIM,
+            height: DIM,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba8Unorm,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING
+            | wgpu::TextureUsages::COPY_SRC
+            | wgpu::TextureUsages::COPY_DST,
+        view_formats: &[],
+    });
+    let pixels = vec![gray; (DIM * DIM * 4) as usize]
+        .iter()
+        .enumerate()
+        .map(|(i, _)| if i % 4 == 3 { 255 } else { gray })
+        .collect::<Vec<u8>>();
+    queue.write_texture(
+        wgpu::TexelCopyTextureInfo {
+            texture: &texture,
+            mip_level: 0,
+            origin: wgpu::Origin3d::ZERO,
+            aspect: wgpu::TextureAspect::All,
+        },
+        &pixels,
+        wgpu::TexelCopyBufferLayout {
+            offset: 0,
+            bytes_per_row: Some(DIM * 4),
+            rows_per_image: Some(DIM),
+        },
+        wgpu::Extent3d {
+            width: DIM,
+            height: DIM,
+            depth_or_array_layers: 1,
+        },
+    );
+    texture
+}
+
+/// Frost a panel over `backdrop` and read the target back. The panel covers the centre 100×100;
+/// the target is seeded with the backdrop (the host blits intermediate→swapchain first).
+fn frost_and_read(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    backdrop: &wgpu::Texture,
+    strength: f32,
+    tint: Tint,
+) -> Vec<u8> {
+    let target = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("target"),
+        size: wgpu::Extent3d {
+            width: DIM,
+            height: DIM,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba8Unorm,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+            | wgpu::TextureUsages::COPY_SRC
+            | wgpu::TextureUsages::COPY_DST,
+        view_formats: &[],
+    });
+    let target_view = target.create_view(&wgpu::TextureViewDescriptor::default());
+    let mut blur = WgpuBlur::new(device);
+    let panel = region([50, 50], [100, 100]);
+    let request = BlurRequest {
+        source_region: panel,
+        target_rect: panel,
+        strength: BlurStrength::new(strength),
+        tint,
+        corner_radius: CornerRadius::new(24.0),
+    };
+    let source = SourceView {
+        view: backdrop.create_view(&wgpu::TextureViewDescriptor::default()),
+        size: [DIM, DIM],
+        color_space: SourceColorSpace::GammaSrgb,
+    };
+    let prepared = blur
+        .prepare(
+            device,
+            queue,
+            &source,
+            wgpu::TextureFormat::Rgba8Unorm,
+            &request,
+        )
+        .expect("prepare")
+        .expect("non-empty region");
+    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+        label: Some("frame"),
+    });
+    encoder.copy_texture_to_texture(
+        wgpu::TexelCopyTextureInfo {
+            texture: backdrop,
+            mip_level: 0,
+            origin: wgpu::Origin3d::ZERO,
+            aspect: wgpu::TextureAspect::All,
+        },
+        wgpu::TexelCopyTextureInfo {
+            texture: &target,
+            mip_level: 0,
+            origin: wgpu::Origin3d::ZERO,
+            aspect: wgpu::TextureAspect::All,
+        },
+        wgpu::Extent3d {
+            width: DIM,
+            height: DIM,
+            depth_or_array_layers: 1,
+        },
+    );
+    blur.record(&mut encoder, &target_view, &prepared)
+        .expect("record");
+    queue.submit([encoder.finish()]);
+    read_back(device, queue, &target)
+}
+
 /// Read an Rgba8 texture back into a row-major `Vec<u8>` (tightly packed, `DIM*4` per row).
 fn read_back(device: &wgpu::Device, queue: &wgpu::Queue, texture: &wgpu::Texture) -> Vec<u8> {
     let unpadded = DIM * 4;
@@ -289,5 +412,57 @@ fn frosted_panel_blurs_the_backdrop_inside_the_masked_rect() {
     assert!(
         (230..=244).contains(&r) && g <= 6 && b <= 6,
         "interior red must round-trip through the linear→sRGB encode to ~237, got r={r} g={g} b={b}"
+    );
+}
+
+#[test]
+fn dual_kawase_preserves_energy_on_a_flat_backdrop() {
+    // strength 30 (≥ the 16px threshold) takes the dual-Kawase path. Over a FLAT mid-gray backdrop
+    // with no tint, an energy-preserving down/up filter (5-tap ÷8, 8-tap ÷12) must leave the gray
+    // unchanged — a wrong-weight kernel that doesn't sum to 1 shifts the brightness and fails here.
+    // This is the real guard the "non-trivial output" readback cannot give (IMPL §2b′).
+    let (device, queue) = software_device();
+    let gray = flat_backdrop(&device, &queue, 128);
+    let out = frost_and_read(
+        &device,
+        &queue,
+        &gray,
+        30.0,
+        Tint::new(LinearRgba::new(0.0, 0.0, 0.0, 0.0)),
+    );
+
+    // Panel centre, far from the panel edges: still ~128 (flat in, flat out).
+    let [r, g, b, _] = pixel(&out, 100, 100);
+    assert!(
+        (120..=136).contains(&r) && (120..=136).contains(&g) && (120..=136).contains(&b),
+        "dual-Kawase must preserve a flat backdrop's brightness, got r={r} g={g} b={b}"
+    );
+}
+
+#[test]
+fn dual_kawase_blurs_a_large_radius_edge() {
+    // The hard red/blue edge under a large (dual-Kawase) blur: the panel centre, on the seam, is a
+    // strong mix — proving the multi-level pyramid actually reaches across the seam (a zero/wrong
+    // half-pixel offset would leave the seam sharp and the centre near-pure-blue).
+    let (device, queue) = software_device();
+    let edge = backdrop_texture(&device, &queue);
+    let out = frost_and_read(
+        &device,
+        &queue,
+        &edge,
+        30.0,
+        Tint::new(LinearRgba::new(0.0, 0.0, 0.0, 0.1)),
+    );
+
+    let [r, _, b, _] = pixel(&out, 100, 100);
+    assert!(
+        r > 40 && b > 40,
+        "a large dual-Kawase blur must mix red and blue across the seam, got r={r} b={b}"
+    );
+    // Outside the panel stays untouched backdrop red.
+    let [r, _, b, _] = pixel(&out, 10, 100);
+    assert!(
+        r > 200 && b < 40,
+        "outside the panel must stay backdrop red, got r={r} b={b}"
     );
 }
