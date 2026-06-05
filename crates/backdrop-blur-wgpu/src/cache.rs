@@ -2,6 +2,7 @@
 //! radius → Gaussian-kernel resolution, and the target-format allowlist. These are the
 //! default-tier-testable heart; the GPU resources they key live in [`crate::WgpuBlur`].
 
+use backdrop_blur_core::Region;
 use wgpu::TextureFormat;
 
 /// The internal scratch format — linear HDR, filterable, usable as both a render target and a
@@ -48,6 +49,22 @@ pub(crate) fn composite_encode_srgb(format: TextureFormat) -> Option<bool> {
         TextureFormat::Rgba16Float => Some(false),
         _ => None,
     }
+}
+
+/// Map target-rect uv `[0,1]` onto the blurred scratch, which holds the **clipped** source region.
+/// Returns `(offset, scale)` so that `scratch_uv = offset + target_uv * scale`. It is the identity
+/// when the source region was fully in-bounds (`clipped == source_region`), and an inset otherwise —
+/// the composite samples through this with `ClampToEdge`, so a source region clipped at a screen
+/// edge still registers 1:1 with the content behind the glass instead of being stretched.
+pub(crate) fn backdrop_uv_remap(source_region: &Region, clipped: &Region) -> ([f32; 2], [f32; 2]) {
+    let [sx, sy] = [
+        source_region.origin[0] as f32,
+        source_region.origin[1] as f32,
+    ];
+    let [sw, sh] = [source_region.size[0] as f32, source_region.size[1] as f32];
+    let [cx, cy] = [clipped.origin[0] as f32, clipped.origin[1] as f32];
+    let [cw, ch] = [clipped.size[0] as f32, clipped.size[1] as f32];
+    ([(sx - cx) / cw, (sy - cy) / ch], [sw / cw, sh / ch])
 }
 
 #[cfg(test)]
@@ -102,6 +119,34 @@ mod tests {
         );
         // Unsupported.
         assert_eq!(composite_encode_srgb(TextureFormat::R8Unorm), None);
+    }
+
+    fn region(origin: [u32; 2], size: [u32; 2]) -> Region {
+        Region {
+            origin,
+            size,
+            scale: backdrop_blur_core::Scale::new(1.0),
+        }
+    }
+
+    #[test]
+    fn backdrop_uv_remap_is_identity_when_unclipped() {
+        let r = region([50, 50], [100, 100]);
+        let (offset, scale) = backdrop_uv_remap(&r, &r);
+        assert!(close(offset[0], 0.0) && close(offset[1], 0.0));
+        assert!(close(scale[0], 1.0) && close(scale[1], 1.0));
+    }
+
+    #[test]
+    fn backdrop_uv_remap_insets_a_right_clipped_region() {
+        // source runs 40px off the right edge; clip_to keeps the origin and shrinks width 100→60.
+        let source = region([100, 50], [100, 80]);
+        let clipped = region([100, 50], [60, 80]);
+        let (offset, scale) = backdrop_uv_remap(&source, &clipped);
+        // Origin is preserved by clip_to, so the offset is zero; only the scale compensates, so
+        // target uv 1.0 maps past scratch uv 1.0 (the clipped-off part) and ClampToEdge holds it.
+        assert!(close(offset[0], 0.0) && close(offset[1], 0.0));
+        assert!(close(scale[0], 100.0 / 60.0) && close(scale[1], 1.0));
     }
 
     #[test]

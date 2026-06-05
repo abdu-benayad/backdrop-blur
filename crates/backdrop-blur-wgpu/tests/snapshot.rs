@@ -279,4 +279,15 @@ fn frosted_panel_blurs_the_backdrop_inside_the_masked_rect() {
         r > 30 && b > 30,
         "the panel centre must show a blurred red↔blue mix (both channels present), got r={r} b={b}"
     );
+
+    // 4. Gamma round-trip: an interior, fully-covered pixel well inside the panel and 30px from
+    //    the seam samples uniform red. The blur leaves it red (linear 1,0,0); the 15%-black tint
+    //    film yields linear 0.85; the Rgba8Unorm target needs the manual linear→sRGB encode, so
+    //    the readback is ~237 (0.930·255), NOT ~217 (0.85·255 — what a SKIPPED encode would give).
+    //    This is the assertion that can actually fail on a gamma-encode bug.
+    let [r, g, b, _] = pixel(&out, 70, 100);
+    assert!(
+        (230..=244).contains(&r) && g <= 6 && b <= 6,
+        "interior red must round-trip through the linear→sRGB encode to ~237, got r={r} g={g} b={b}"
+    );
 }

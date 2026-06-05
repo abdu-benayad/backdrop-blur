@@ -46,32 +46,38 @@ impl GaussianParams {
     }
 }
 
-/// Mirrors `CompositeParams` in `shaders/composite.wgsl` (48 bytes).
+/// Mirrors `CompositeParams` in `shaders/composite.wgsl` (64 bytes).
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 pub(crate) struct CompositeParams {
-    pub half_extents: [f32; 2],
+    pub rect_origin_px: [f32; 2],
+    pub rect_size_px: [f32; 2],
+    pub tint: [f32; 4],
+    pub backdrop_uv_offset: [f32; 2],
+    pub backdrop_uv_scale: [f32; 2],
     pub corner_radius_px: f32,
     pub encode_srgb: u32,
-    pub tint: [f32; 4],
-    pub rect_size: [f32; 2],
     pub _pad: [f32; 2],
 }
 
 impl CompositeParams {
     pub(crate) fn new(
-        half_extents: [f32; 2],
+        rect_origin_px: [f32; 2],
+        rect_size_px: [f32; 2],
+        tint: [f32; 4],
+        backdrop_uv_offset: [f32; 2],
+        backdrop_uv_scale: [f32; 2],
         corner_radius_px: f32,
         encode_srgb: bool,
-        tint: [f32; 4],
-        rect_size: [f32; 2],
     ) -> Self {
         Self {
-            half_extents,
+            rect_origin_px,
+            rect_size_px,
+            tint,
+            backdrop_uv_offset,
+            backdrop_uv_scale,
             corner_radius_px,
             encode_srgb: u32::from(encode_srgb),
-            tint,
-            rect_size,
             _pad: [0.0; 2],
         }
     }
@@ -96,13 +102,15 @@ mod tests {
 
     #[test]
     fn composite_params_layout_matches_wgsl() {
-        assert_eq!(size_of::<CompositeParams>(), 48);
-        assert_eq!(offset_of!(CompositeParams, half_extents), 0);
-        assert_eq!(offset_of!(CompositeParams, corner_radius_px), 8);
-        assert_eq!(offset_of!(CompositeParams, encode_srgb), 12);
+        assert_eq!(size_of::<CompositeParams>(), 64);
+        assert_eq!(offset_of!(CompositeParams, rect_origin_px), 0);
+        assert_eq!(offset_of!(CompositeParams, rect_size_px), 8);
         // `tint` is a vec4 — it MUST land on a 16-byte boundary or the GPU misreads it.
         assert_eq!(offset_of!(CompositeParams, tint), 16);
-        assert_eq!(offset_of!(CompositeParams, rect_size), 32);
+        assert_eq!(offset_of!(CompositeParams, backdrop_uv_offset), 32);
+        assert_eq!(offset_of!(CompositeParams, backdrop_uv_scale), 40);
+        assert_eq!(offset_of!(CompositeParams, corner_radius_px), 48);
+        assert_eq!(offset_of!(CompositeParams, encode_srgb), 52);
     }
 
     #[test]

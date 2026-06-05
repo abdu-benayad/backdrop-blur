@@ -1,18 +1,23 @@
-// Composite the frosted surface: sample the blurred backdrop, evaluate the rounded-rect SDF
-// from the resolved mask, lay the tint film over it, and (per target format) re-encode to the
-// target's color space. Drawn into the target_rect via a viewport, blended over whatever the
-// host already put in the target (LoadOp::Load).
+// Composite the frosted surface. Drawn over the WHOLE target attachment (not a per-rect
+// viewport) so the rounded-rect coverage — not a hard scissor — forms every edge, giving real
+// anti-aliasing on the straight sides as well as the corners. Each fragment derives its target
+// pixel from @builtin(position); coverage is 0 outside the panel, so LoadOp::Load leaves the
+// rest of the target untouched.
 //
 // The blur ran in linear light; `encode_srgb` re-encodes linear→sRGB for gamma targets
 // (Rgba8Unorm/Bgra8Unorm, the egui case). For `*Srgb` targets the hardware encodes on write,
 // and for float targets no encode is wanted — both set `encode_srgb = 0`.
 
 struct CompositeParams {
-    half_extents: vec2<f32>,   // target rect half-size, in physical px
-    corner_radius_px: f32,     // clamped, in physical px
-    encode_srgb: u32,          // 1 = manually linear→sRGB encode the output
-    tint: vec4<f32>,           // linear, straight alpha (alpha = film opacity)
-    rect_size: vec2<f32>,      // target rect size in physical px (for the SDF + edge AA)
+    rect_origin_px: vec2<f32>,    // target rect top-left, in framebuffer px
+    rect_size_px: vec2<f32>,      // target rect size, in framebuffer px
+    tint: vec4<f32>,              // linear, straight alpha (alpha = film opacity)
+    // Map target-rect uv [0,1] onto the blurred scratch, which holds the CLIPPED source region
+    // (identity when the source region was fully in-bounds; an inset when it was clipped at an edge).
+    backdrop_uv_offset: vec2<f32>,
+    backdrop_uv_scale: vec2<f32>,
+    corner_radius_px: f32,        // clamped, in framebuffer px
+    encode_srgb: u32,             // 1 = manually linear→sRGB encode the output
     _pad: vec2<f32>,
 };
 
@@ -20,19 +25,13 @@ struct CompositeParams {
 @group(0) @binding(1) var blurred_samp: sampler;
 @group(0) @binding(2) var<uniform> params: CompositeParams;
 
-struct VsOut {
-    @builtin(position) pos: vec4<f32>,
-    @location(0) uv: vec2<f32>,
-};
-
+// A single oversized triangle covering the whole attachment. The fragment uses
+// @builtin(position) for its pixel coordinate, so no interpolated uv is needed.
 @vertex
-fn vs_main(@builtin(vertex_index) vi: u32) -> VsOut {
-    var out: VsOut;
+fn vs_main(@builtin(vertex_index) vi: u32) -> @builtin(position) vec4<f32> {
     let x = f32((vi << 1u) & 2u);
     let y = f32(vi & 2u);
-    out.uv = vec2<f32>(x, y);
-    out.pos = vec4<f32>(x * 2.0 - 1.0, 1.0 - y * 2.0, 0.0, 1.0);
-    return out;
+    return vec4<f32>(x * 2.0 - 1.0, 1.0 - y * 2.0, 0.0, 1.0);
 }
 
 // Signed distance to a rounded rectangle centered at the origin (negative inside).
@@ -49,13 +48,21 @@ fn linear_to_srgb(c: vec3<f32>) -> vec3<f32> {
 }
 
 @fragment
-fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
-    let blurred = textureSampleLevel(blurred_tex, blurred_samp, in.uv, 0.0);
+fn fs_main(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
+    let px = frag.xy; // framebuffer pixel center
 
-    // Rounded-rect coverage, in pixel space, centered in the rect. 1px AA band at the edge.
-    let p = (in.uv - vec2<f32>(0.5)) * params.rect_size;
-    let d = sd_rounded_rect(p, params.half_extents, params.corner_radius_px);
-    let coverage = 1.0 - smoothstep(0.0, 1.0, d);
+    // Sample the blurred backdrop. rect-uv maps the target rect to [0,1]; the backdrop remap
+    // then accounts for any source-region clip. ClampToEdge handles out-of-range (offscreen).
+    let rect_uv = (px - params.rect_origin_px) / params.rect_size_px;
+    let sample_uv = params.backdrop_uv_offset + rect_uv * params.backdrop_uv_scale;
+    let blurred = textureSampleLevel(blurred_tex, blurred_samp, sample_uv, 0.0);
+
+    // Rounded-rect coverage in pixel space, centered in the rect, with a boundary-centered 1px
+    // AA band (50% coverage sits exactly on the geometric edge).
+    let half = params.rect_size_px * 0.5;
+    let p = px - (params.rect_origin_px + half);
+    let d = sd_rounded_rect(p, half, params.corner_radius_px);
+    let coverage = 1.0 - smoothstep(-0.5, 0.5, d);
 
     // Tint film over the blurred backdrop (straight-alpha "over", in linear light).
     var rgb = mix(blurred.rgb, params.tint.rgb, params.tint.a);

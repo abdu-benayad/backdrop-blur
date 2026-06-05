@@ -28,13 +28,15 @@
 
 use std::collections::HashMap;
 
-use backdrop_blur_core::{BackdropBlur, BlurError, BlurRequest, BlurStage, Region, ResolvedMask};
+use backdrop_blur_core::{BackdropBlur, BlurError, BlurRequest, BlurStage, ResolvedMask};
 use wgpu::util::DeviceExt as _;
 
 mod cache;
 mod uniforms;
 
-use cache::{PingPongKey, SCRATCH_FORMAT, composite_encode_srgb, resolve_gaussian};
+use cache::{
+    PingPongKey, SCRATCH_FORMAT, backdrop_uv_remap, composite_encode_srgb, resolve_gaussian,
+};
 use uniforms::{CompositeParams, GaussianParams};
 
 /// The color space of the backdrop the host hands in. egui renders **gamma-encoded** regardless
@@ -63,26 +65,23 @@ pub struct SourceView {
 }
 
 /// The owned, per-call handle from `prepare` to `record`: which scratch chain and composite
-/// pipeline to use, where to composite, and the three bind groups (which already hold their
-/// textures/uniforms via wgpu's internal refcounting).
+/// pipeline to use, plus the three bind groups (which already hold their textures/uniforms via
+/// wgpu's internal refcounting). `generation` stamps the prepare so `record` can debug-assert
+/// the v1 serial prepare→record contract (a stale handle would alias clobbered scratch — K1).
 pub struct WgpuPrepared {
     key: PingPongKey,
     target_format: wgpu::TextureFormat,
-    target_rect: Region,
+    generation: u64,
     horizontal_bind: wgpu::BindGroup,
     vertical_bind: wgpu::BindGroup,
     composite_bind: wgpu::BindGroup,
 }
 
-/// One ping-pong scratch chain: two `Rgba16Float` textures (and their views) at the clipped
-/// source-region size. The horizontal pass writes A, the vertical pass writes B, the composite
-/// samples B.
+/// One ping-pong scratch chain: two `Rgba16Float` texture views at the clipped source-region
+/// size. The horizontal pass writes A (`views[0]`), the vertical pass writes B (`views[1]`), the
+/// composite samples B. Only the views are stored — a `wgpu::TextureView` keeps its parent
+/// texture alive by refcount, so the textures need no separate field.
 struct ScratchChain {
-    #[expect(
-        dead_code,
-        reason = "the textures are kept alive for their views; only the views are bound"
-    )]
-    textures: [wgpu::Texture; 2],
     views: [wgpu::TextureView; 2],
 }
 
@@ -97,6 +96,8 @@ pub struct WgpuBlur {
     composite_shader: wgpu::ShaderModule,
     composite_pipelines: HashMap<wgpu::TextureFormat, wgpu::RenderPipeline>,
     scratch: HashMap<PingPongKey, ScratchChain>,
+    /// Bumped each `prepare`; stamped into [`WgpuPrepared`] so `record` can detect a stale handle.
+    generation: u64,
 }
 
 // --- Constructors ---
@@ -175,6 +176,7 @@ impl WgpuBlur {
             composite_shader,
             composite_pipelines: HashMap::new(),
             scratch: HashMap::new(),
+            generation: 0,
         }
     }
 }
@@ -203,15 +205,14 @@ impl WgpuBlur {
                     | wgpu::TextureUsages::RENDER_ATTACHMENT,
                 view_formats: &[],
             });
-            let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-            (texture, view)
+            // The view keeps the texture alive by refcount; the texture handle can drop here.
+            texture.create_view(&wgpu::TextureViewDescriptor::default())
         };
-        let (texture_a, view_a) = make("backdrop-blur scratch A");
-        let (texture_b, view_b) = make("backdrop-blur scratch B");
+        let view_a = make("backdrop-blur scratch A");
+        let view_b = make("backdrop-blur scratch B");
         self.scratch.insert(
             key,
             ScratchChain {
-                textures: [texture_a, texture_b],
                 views: [view_a, view_b],
             },
         );
@@ -323,27 +324,45 @@ impl BackdropBlur for WgpuBlur {
             false,
         );
 
+        // Composite. The shader draws over the whole target and derives each fragment from
+        // @builtin(position), so it needs the target rect in framebuffer px. `backdrop_uv_*`
+        // maps target-rect uv onto scratch B, which holds the CLIPPED source region — identity
+        // when the source was fully in-bounds, an inset when it was clipped at an edge, so the
+        // frosted backdrop stays registered 1:1 with the content behind the glass.
+        let (backdrop_uv_offset, backdrop_uv_scale) =
+            backdrop_uv_remap(&request.source_region, &clipped);
+
         let mask = ResolvedMask::from_target(&request.target_rect, request.corner_radius);
         let tint = request.tint.color();
         let composite = CompositeParams::new(
-            mask.half_extents,
-            mask.corner_radius_px,
-            encode_srgb,
-            [tint.r(), tint.g(), tint.b(), tint.a()],
+            [
+                request.target_rect.origin[0] as f32,
+                request.target_rect.origin[1] as f32,
+            ],
             [
                 request.target_rect.size[0] as f32,
                 request.target_rect.size[1] as f32,
             ],
+            [tint.r(), tint.g(), tint.b(), tint.a()],
+            backdrop_uv_offset,
+            backdrop_uv_scale,
+            mask.corner_radius_px,
+            encode_srgb,
         );
 
-        let horizontal_buf = self.uniform_buffer(device, &horizontal, "backdrop-blur gaussian-h");
-        let vertical_buf = self.uniform_buffer(device, &vertical, "backdrop-blur gaussian-v");
-        let composite_buf = self.uniform_buffer(device, &composite, "backdrop-blur composite");
+        let horizontal_buf = uniform_buffer(device, &horizontal, "backdrop-blur gaussian-h");
+        let vertical_buf = uniform_buffer(device, &vertical, "backdrop-blur gaussian-v");
+        let composite_buf = uniform_buffer(device, &composite, "backdrop-blur composite");
 
+        // The scratch was just inserted by ensure_scratch; a miss here is an internal fault, so
+        // return the same typed error `record` uses rather than panicking (the contract is total).
         let chain = self
             .scratch
             .get(&key)
-            .expect("scratch chain inserted above");
+            .ok_or_else(|| BlurError::ResourceCreation {
+                stage: BlurStage::PingPongTexture,
+                source: "scratch chain missing immediately after ensure_scratch".into(),
+            })?;
         let horizontal_bind = self.bind(
             device,
             &source.view,
@@ -363,10 +382,11 @@ impl BackdropBlur for WgpuBlur {
             "backdrop-blur composite-bind",
         );
 
+        self.generation += 1;
         Ok(Some(WgpuPrepared {
             key,
             target_format,
-            target_rect: request.target_rect,
+            generation: self.generation,
             horizontal_bind,
             vertical_bind,
             composite_bind,
@@ -379,6 +399,14 @@ impl BackdropBlur for WgpuBlur {
         target: &Self::Target,
         prepared: &Self::Prepared,
     ) -> Result<(), BlurError> {
+        // v1 is serial prepare→record per surface: this must be the most recent prepare, or its
+        // shared scratch has already been clobbered by a newer one (K1). Debug-only — release
+        // builds trust the contract.
+        debug_assert_eq!(
+            prepared.generation, self.generation,
+            "record called with a stale Prepared (a newer prepare clobbered the shared scratch); \
+             v1 requires serial prepare→record per surface (K1)"
+        );
         let chain = self
             .scratch
             .get(&prepared.key)
@@ -409,8 +437,11 @@ impl BackdropBlur for WgpuBlur {
             "backdrop-blur v-pass",
         );
 
-        // Composite: scratch B → target, restricted to target_rect, blended over existing content.
-        let rect = prepared.target_rect;
+        // Composite: scratch B → target, over the WHOLE attachment (default viewport). The
+        // rounded-rect coverage forms every edge, so straight sides are anti-aliased and an
+        // off-target rect cannot trip scissor validation; coverage 0 outside the panel keeps
+        // LoadOp::Load content untouched. (A scissor to the panel + AA margin is a future perf
+        // optimization once the host threads the target size in.)
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("backdrop-blur composite-pass"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -427,10 +458,6 @@ impl BackdropBlur for WgpuBlur {
             occlusion_query_set: None,
             multiview_mask: None,
         });
-        let [x, y] = [rect.origin[0] as f32, rect.origin[1] as f32];
-        let [w, h] = [rect.size[0] as f32, rect.size[1] as f32];
-        pass.set_viewport(x, y, w, h, 0.0, 1.0);
-        pass.set_scissor_rect(rect.origin[0], rect.origin[1], rect.size[0], rect.size[1]);
         pass.set_pipeline(composite_pipeline);
         pass.set_bind_group(0, &prepared.composite_bind, &[]);
         pass.draw(0..3, 0..1);
@@ -440,20 +467,16 @@ impl BackdropBlur for WgpuBlur {
 
 // --- Pass + buffer helpers ---
 
-impl WgpuBlur {
-    fn uniform_buffer<T: bytemuck::Pod>(
-        &self,
-        device: &wgpu::Device,
-        value: &T,
-        label: &str,
-    ) -> wgpu::Buffer {
-        device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some(label),
-            contents: bytemuck::bytes_of(value),
-            usage: wgpu::BufferUsages::UNIFORM,
-        })
-    }
+/// Create a UNIFORM buffer initialized with `value`'s bytes.
+fn uniform_buffer<T: bytemuck::Pod>(device: &wgpu::Device, value: &T, label: &str) -> wgpu::Buffer {
+    device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some(label),
+        contents: bytemuck::bytes_of(value),
+        usage: wgpu::BufferUsages::UNIFORM,
+    })
+}
 
+impl WgpuBlur {
     /// A full-attachment Gaussian pass (replace, no blend): clears then draws the oversized
     /// triangle into `attachment` using `bind`.
     fn blur_pass(

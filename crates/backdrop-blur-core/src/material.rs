@@ -30,9 +30,14 @@ use crate::geometry::Scale;
 pub struct BlurStrength(f32);
 
 impl BlurStrength {
-    /// Construct from logical points, clamping negatives to `0`.
+    /// Construct from logical points. Non-finite input (`NaN`/`±∞`) and negatives clamp to `0`,
+    /// so a garbage strength becomes "no blur" rather than a degenerate kernel downstream.
     pub fn new(points: f32) -> Self {
-        Self(points.max(0.0))
+        Self(if points.is_finite() {
+            points.max(0.0)
+        } else {
+            0.0
+        })
     }
 
     /// The blur radius in logical points (always `>= 0`).
@@ -157,9 +162,14 @@ impl Tint {
 pub struct CornerRadius(f32);
 
 impl CornerRadius {
-    /// Construct from logical points, clamping negatives to `0` (square corners).
+    /// Construct from logical points. Non-finite input (`NaN`/`±∞`) and negatives clamp to `0`
+    /// (square corners).
     pub fn new(points: f32) -> Self {
-        Self(points.max(0.0))
+        Self(if points.is_finite() {
+            points.max(0.0)
+        } else {
+            0.0
+        })
     }
 
     /// The corner radius in logical points (always `>= 0`).
@@ -180,6 +190,13 @@ mod tests {
     fn blur_strength_new_clamps_negative_to_zero() {
         assert_eq!(BlurStrength::new(-3.0).points(), 0.0);
         assert_eq!(BlurStrength::new(8.0).points(), 8.0);
+    }
+
+    #[test]
+    fn blur_strength_new_scrubs_non_finite_to_zero() {
+        assert_eq!(BlurStrength::new(f32::NAN).points(), 0.0);
+        assert_eq!(BlurStrength::new(f32::INFINITY).points(), 0.0);
+        assert_eq!(BlurStrength::new(f32::NEG_INFINITY).points(), 0.0);
     }
 
     #[test]
