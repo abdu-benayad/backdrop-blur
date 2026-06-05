@@ -482,3 +482,58 @@ fn dual_kawase_blurs_a_large_radius_edge() {
         "outside the panel must stay backdrop red, got r={r} b={b}"
     );
 }
+
+/// The analytic edge-halo oracle: along the panel's straight left edge (x≈50, y=100, away from the
+/// rounded corners), every pixel must lie within the `[exterior, interior]` luminance envelope plus
+/// a tolerance — a premultiplied/gamma halo would overshoot (a fringe brighter or darker than both
+/// sides). The high-contrast setup makes the envelope wide, so an overshoot is a real, detectable
+/// signal. (AA *presence* is covered by the corner-mask and edge tests; this oracle is only the
+/// halo gate, and a 1px-wide AA band aligned to the pixel grid has no integer-center midtone.)
+fn assert_no_edge_halo(out: &[u8], exterior_x: u32, interior_x: u32) {
+    const TOL: i32 = 6;
+    let exterior = i32::from(pixel(out, exterior_x, 100)[0]);
+    let interior = i32::from(pixel(out, interior_x, 100)[0]);
+    let (lo, hi) = (exterior.min(interior), exterior.max(interior));
+    assert!(
+        hi - lo > 100,
+        "the halo oracle needs a high-contrast envelope, got [{lo},{hi}]"
+    );
+    for x in 40..62 {
+        let v = i32::from(pixel(out, x, 100)[0]);
+        assert!(
+            v >= lo - TOL && v <= hi + TOL,
+            "panel edge at x={x} overshoots the [{lo},{hi}] envelope (halo): v={v}"
+        );
+    }
+}
+
+#[test]
+fn translucent_panel_edge_has_no_halo() {
+    // IMPL §2d — freeze the premultiplied-vs-straight edge-alpha convention with an analytic oracle
+    // (not an eyeball). The straight-alpha composite uses analytic coverage and a constant edge
+    // color, so its AA edge blends monotonically — no halo. This pins that decision: a future
+    // premultiplied/filtering regression would overshoot the envelope and fail here.
+    let (device, queue) = software_device();
+
+    // Bright frost over black — the white-halo (overshoot) direction.
+    let black = flat_backdrop(&device, &queue, 0);
+    let out = frost_and_read(
+        &device,
+        &queue,
+        &black,
+        8.0,
+        Tint::from_srgb_unmultiplied([240, 240, 240, 204]),
+    );
+    assert_no_edge_halo(&out, 30, 90);
+
+    // Dark frost over white — the dark-fringe (undershoot) direction.
+    let white = flat_backdrop(&device, &queue, 255);
+    let out = frost_and_read(
+        &device,
+        &queue,
+        &white,
+        8.0,
+        Tint::from_srgb_unmultiplied([20, 20, 20, 204]),
+    );
+    assert_no_edge_halo(&out, 30, 90);
+}

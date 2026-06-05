@@ -375,8 +375,13 @@ that *does* expose a sampleable-backdrop hook drops in as an additive adapter cr
   production-compositor standard (KWin, picom). ~2.8 ms @1080p on a 2015 tiler vs 23–42 ms naive
   Gaussian. A linear-sampled separable Gaussian is the fallback for a single small fixed radius.
 - **Linear-space convolution** (CONFIRMED). The **edge alpha convention** (premultiplied vs straight at
-  the translucent rounded-rect boundary) is **PARTIAL/undecided** — W3C says backdrop filters operate in
-  sRGB, the research flags a possible halo — and is settled by the §11 snapshot probe, not frozen now.
+  the translucent rounded-rect boundary) is now **FROZEN to straight alpha** (2026-06-05, IMPL §2d). The
+  composite's coverage is **analytic** (the rounded-rect SDF, not a filtered alpha texture) and the edge
+  color is constant, so the "over" blend is monotonic — there is no premultiplied/gamma halo to avoid.
+  The §2d analytic oracle (`backdrop-blur-wgpu/tests/snapshot.rs::translucent_panel_edge_has_no_halo`)
+  proved this on a high-contrast edge in both directions (bright-over-black, dark-over-white) and pins it
+  against regression; the research's halo concern applies to filtered color-with-alpha, which this path
+  never does.
 - Shaders are **ported, not bound** — re-implemented from published ARM/scenefx values, not copied from
   GPLv3 picom. No Skia/libplacebo dependency.
 

@@ -64,7 +64,10 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
     let d = sd_rounded_rect(p, half, params.corner_radius_px);
     let coverage = 1.0 - smoothstep(-0.5, 0.5, d);
 
-    // Tint film over the blurred backdrop (straight-alpha "over", in linear light).
+    // Tint film over the blurred backdrop: a linear-light mix by film opacity. The surface's own
+    // coverage (the rounded-rect AA) is straight alpha, blended "over" the target by the pipeline.
+    // Because coverage is analytic and this edge color is constant, that blend is monotonic — no
+    // premultiplied/gamma halo. IMPL §2d's analytic oracle (tests/snapshot.rs) freezes that.
     var rgb = mix(blurred.rgb, params.tint.rgb, params.tint.a);
     if (params.encode_srgb == 1u) {
         rgb = linear_to_srgb(rgb);
