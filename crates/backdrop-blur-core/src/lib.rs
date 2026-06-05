@@ -25,8 +25,10 @@ mod error;
 mod geometry;
 mod liveness;
 mod material;
+mod seam;
 
 pub use error::{BackendError, BlurError, BlurStage};
 pub use geometry::{BlurRequest, Region, ResolvedMask, Scale};
 pub use liveness::RepaintPolicy;
 pub use material::{BlurStrength, CornerRadius, LinearRgba, Tint};
+pub use seam::BackdropBlur;
