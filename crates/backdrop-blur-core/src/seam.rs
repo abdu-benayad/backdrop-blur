@@ -8,6 +8,17 @@
 //! The associated types are each backend's resource universe — distinct per backend, which is
 //! exactly why the trait is **not object-safe** and backends are **separate crates** (the
 //! `wgpu-types` → `wgpu-hal` model). Dispatch is static, monomorphized.
+//!
+//! # Gate verdict (IMPL §1d): the trait is kept
+//!
+//! Before committing to this seam, the divergent backend was sketched against it: the
+//! `examples/glow-gate` crate maps the proven immediate-mode glow pipeline onto every
+//! associated type and method here, and **compiles**. Each type binds to a real glow type
+//! (`Device`/`Encoder` → `glow::Context`, `SourceTexture` → `glow::Texture`, …); the one `()`
+//! (`Queue`) is honest because glow uploads through its context rather than a queue; and the
+//! grab + origin flip live entirely inside `grab_source`, so no extra method is forced. v1
+//! therefore ships **with** this trait, not a concrete one-backend pair. See that crate's
+//! module docs for the full §3 decision table.
 
 use crate::{BlurError, BlurRequest, Region};
 

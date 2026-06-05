@@ -7,6 +7,11 @@
 [workspace]
 resolver = "3"
 members = ["crates/*"]
+# Throwaway/standalone packages kept OUT of the workspace so `cargo build --workspace`
+# and `cargo clippy --workspace --all-targets` never compile glow or winit, keeping the
+# default verification tier portable to any machine (IMPL §1d/§3, §8). Each builds in its
+# own job via `--manifest-path`.
+exclude = ["examples/glow-gate"]
 
 [workspace.package]
 edition = "2024"

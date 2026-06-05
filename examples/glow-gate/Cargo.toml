@@ -1,0 +1,11 @@
+[package]
+name = "glow-gate"
+version = "0.0.0"
+edition = "2024"
+publish = false
+description = "Compile-only gate (IMPL §1d/§3): proves the BackdropBlur seam fits the divergent, immediate-mode glow backend before any wgpu code is written. Bodies are unimplemented!() — only the type mapping is under test. Not a published crate."
+
+# A SEPARATE package, excluded from the workspace, so glow never enters the portable loop.
+[dependencies]
+backdrop-blur-core = { path = "../../crates/backdrop-blur-core" }
+glow = "0.17"
