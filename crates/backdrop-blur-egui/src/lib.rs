@@ -21,4 +21,4 @@ mod own_loop;
 pub use backdrop_blur_core::{BlurStrength, CornerRadius, LinearRgba, RepaintPolicy, Tint};
 pub use backdrop_blur_wgpu::{SourceColorSpace, SourceView, WgpuBlur};
 pub use egui_wgpu::ScreenDescriptor;
-pub use own_loop::{FrameInput, OwnLoopRenderer, Surface, strongest_repaint};
+pub use own_loop::{FrameInput, OwnLoopRenderer, Surface, is_supported_target, strongest_repaint};

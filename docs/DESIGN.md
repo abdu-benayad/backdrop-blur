@@ -338,6 +338,16 @@ The host drives `egui-winit` + `egui-wgpu` directly (not eframe). The adapter's 
 
 This keeps the crate owning **only the background**; content + a11y stay the host's.
 
+> **v1 as-built (steps 3 & 5):** the adapter does **not** split the egui frame into backdrop and
+> foreground passes — it renders the *same* tessellated frame into both the intermediate and the
+> target (no second post-composite pass). The Backdrop-Root rule is therefore a **host obligation**,
+> documented on `FrameInput::paint_jobs`: the host must not paint a frosted surface's own
+> background/fill into the jobs, or the blur (source_region == target_rect) samples the panel's own
+> fill instead of the content behind it. The surface's foreground is painted by the host in its own
+> later pass. Also: `render_frame` itself drives `request_repaint` from the surfaces' `RepaintPolicy`
+> (per §4.6), taking the host's `&egui::Context`; and `OwnLoopRenderer::new` rejects non-Unorm
+> (sRGB/HDR) targets, since the adapter pins the decode-in-shader gamma model.
+
 ## 7. Iced — evaluated and dropped (the recorded decision)
 
 Iced was a candidate second toolkit; it is **dropped from the plan** for two independent reasons:

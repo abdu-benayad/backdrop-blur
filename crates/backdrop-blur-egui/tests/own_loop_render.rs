@@ -128,7 +128,7 @@ fn pixel(data: &[u8], x: u32, y: u32) -> [u8; 4] {
 #[test]
 fn own_loop_frosts_a_panel_over_a_real_egui_frame() {
     let (device, queue) = software_device();
-    let (_ctx, jobs, textures_delta) = egui_red_blue_frame();
+    let (ctx, jobs, textures_delta) = egui_red_blue_frame();
 
     let target = device.create_texture(&wgpu::TextureDescriptor {
         label: Some("target"),
@@ -146,7 +146,8 @@ fn own_loop_frosts_a_panel_over_a_real_egui_frame() {
     });
     let target_view = target.create_view(&wgpu::TextureViewDescriptor::default());
 
-    let mut adapter = OwnLoopRenderer::new(&device, FORMAT);
+    let mut adapter =
+        OwnLoopRenderer::new(&device, FORMAT).expect("Rgba8Unorm is a supported target");
     let mut blur = WgpuBlur::new(&device);
 
     // A 100×100 panel centred on the red/blue edge.
@@ -161,10 +162,11 @@ fn own_loop_frosts_a_panel_over_a_real_egui_frame() {
         repaint: RepaintPolicy::Static,
     };
 
-    let repaint = adapter
+    adapter
         .render_frame(
             &device,
             &queue,
+            &ctx,
             &mut blur,
             FrameInput {
                 target: &target_view,
@@ -178,11 +180,6 @@ fn own_loop_frosts_a_panel_over_a_real_egui_frame() {
             &[surface],
         )
         .expect("render_frame succeeds");
-    assert_eq!(
-        repaint,
-        RepaintPolicy::Static,
-        "a static surface asks for no repaint"
-    );
 
     let out = read_back(&device, &queue, &target);
 

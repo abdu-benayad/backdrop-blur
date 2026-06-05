@@ -56,20 +56,13 @@ impl App {
     }
 }
 
-/// Pick a backdrop-blur-supported swapchain format, preferring the non-sRGB Unorm ones egui
-/// writes gamma into; fall back to whatever the surface offers first.
-fn choose_format(caps: &wgpu::SurfaceCapabilities) -> wgpu::TextureFormat {
+/// Pick a backdrop-blur-supported swapchain format (the non-sRGB Unorm ones egui writes gamma
+/// into), or `None` if the surface offers none — the adapter only composites into those.
+fn choose_format(caps: &wgpu::SurfaceCapabilities) -> Option<wgpu::TextureFormat> {
     caps.formats
         .iter()
         .copied()
-        .find(|f| {
-            matches!(
-                f,
-                wgpu::TextureFormat::Bgra8Unorm | wgpu::TextureFormat::Rgba8Unorm
-            )
-        })
-        .or_else(|| caps.formats.first().copied())
-        .unwrap_or(wgpu::TextureFormat::Bgra8Unorm)
+        .find(|f| backdrop_blur_egui::is_supported_target(*f))
 }
 
 impl ApplicationHandler for App {
@@ -108,7 +101,11 @@ impl ApplicationHandler for App {
 
         let size = window.inner_size();
         let caps = surface.get_capabilities(&adapter);
-        let format = choose_format(&caps);
+        let Some(format) = choose_format(&caps) else {
+            eprintln!("no backdrop-blur-supported (non-sRGB Unorm) swapchain format; exiting");
+            event_loop.exit();
+            return;
+        };
         let config = wgpu::SurfaceConfiguration {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
             format,
@@ -130,7 +127,7 @@ impl ApplicationHandler for App {
             None,
             None,
         );
-        let own_loop = OwnLoopRenderer::new(&device, format);
+        let own_loop = OwnLoopRenderer::new(&device, format).expect("choose_format returns a supported target");
         let blur = WgpuBlur::new(&device);
 
         self.gpu = Some(Gpu {
@@ -233,6 +230,7 @@ impl App {
         let result = gpu.own_loop.render_frame(
             &gpu.device,
             &gpu.queue,
+            &gpu.egui_ctx,
             &mut gpu.blur,
             FrameInput {
                 target: &view,
@@ -248,7 +246,7 @@ impl App {
         let frame_ms = blur_start.elapsed().as_secs_f32() * 1000.0;
 
         match result {
-            Ok(_repaint) => {
+            Ok(()) => {
                 frame.present();
                 gpu.window.set_title(&format!(
                     "backdrop-blur — frosted panel  |  blur {}  strength {:.0}  |  {:.2} ms/frame",

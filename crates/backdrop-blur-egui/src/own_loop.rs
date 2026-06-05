@@ -53,7 +53,8 @@ impl Surface {
 }
 
 /// The strongest repaint obligation across a set of surfaces: `Live` wins, then the shortest
-/// `Bounded` interval, else `Static`. The host applies this to its egui `Context`.
+/// `Bounded` interval, else `Static`. [`OwnLoopRenderer::render_frame`] applies this to the egui
+/// `Context` itself; this is exposed for hosts that want to inspect the obligation directly.
 pub fn strongest_repaint(surfaces: &[Surface]) -> RepaintPolicy {
     surfaces
         .iter()
@@ -116,8 +117,19 @@ where
 /// screen; its format matches the target so one `egui-wgpu::Renderer` serves both.
 struct Intermediate {
     texture: wgpu::Texture,
-    view: wgpu::TextureView,
     size: [u32; 2],
+}
+
+/// Whether the own-loop adapter supports compositing into `format`. The adapter renders egui's
+/// **gamma-encoded** output (egui#3168) into an intermediate of the *same* format and decodes it
+/// in the blur shader; that model is only correct for **non-sRGB `Unorm`** targets. An `*Srgb`
+/// target would make the sampler decode once and the shader decode again (washed-out frost), so it
+/// is rejected at construction rather than silently mis-rendered.
+pub fn is_supported_target(format: wgpu::TextureFormat) -> bool {
+    matches!(
+        format,
+        wgpu::TextureFormat::Rgba8Unorm | wgpu::TextureFormat::Bgra8Unorm
+    )
 }
 
 /// Drives one own-loop frame for an `egui-winit` + `egui-wgpu` host: it renders the egui UI into
@@ -130,23 +142,39 @@ pub struct OwnLoopRenderer {
 }
 
 impl OwnLoopRenderer {
-    /// Build the adapter for a host whose target (swapchain) has `target_format`. v1 expects a
-    /// non-sRGB `Unorm` format (egui writes gamma-encoded values, egui#3168); the composite
-    /// re-encodes to match.
-    pub fn new(device: &wgpu::Device, target_format: wgpu::TextureFormat) -> Self {
+    /// Build the adapter for a host whose target (swapchain) has `target_format`.
+    ///
+    /// Returns [`BlurError::UnsupportedTarget`] unless `target_format` is a non-sRGB `Unorm`
+    /// format ([`is_supported_target`]) — the adapter pins the decode-in-shader gamma model, which
+    /// only matches non-sRGB targets (egui#3168). This makes the documented format assumption a
+    /// checked contract rather than prose.
+    pub fn new(
+        device: &wgpu::Device,
+        target_format: wgpu::TextureFormat,
+    ) -> Result<Self, BlurError> {
+        if !is_supported_target(target_format) {
+            return Err(BlurError::UnsupportedTarget {
+                format: format!("{target_format:?} (own-loop needs a non-sRGB Unorm target)"),
+            });
+        }
         let renderer =
             egui_wgpu::Renderer::new(device, target_format, egui_wgpu::RendererOptions::default());
-        Self {
+        Ok(Self {
             renderer,
             target_format,
             intermediate: None,
-        }
+        })
     }
 
-    /// Recreate the intermediate if the screen size changed; return its view.
-    fn intermediate_view(&mut self, device: &wgpu::Device, size: [u32; 2]) -> &wgpu::TextureView {
-        let stale = self.intermediate.as_ref().is_none_or(|i| i.size != size);
-        if stale {
+    /// The intermediate sized to `size`, recreated only on a size change. Total — no panic path:
+    /// a stale intermediate is dropped, then `get_or_insert_with` constructs or returns the cached
+    /// one.
+    fn intermediate(&mut self, device: &wgpu::Device, size: [u32; 2]) -> &Intermediate {
+        if self.intermediate.as_ref().is_none_or(|i| i.size != size) {
+            self.intermediate = None;
+        }
+        let format = self.target_format;
+        self.intermediate.get_or_insert_with(|| {
             let texture = device.create_texture(&wgpu::TextureDescriptor {
                 label: Some("backdrop-blur egui intermediate"),
                 size: wgpu::Extent3d {
@@ -157,35 +185,28 @@ impl OwnLoopRenderer {
                 mip_level_count: 1,
                 sample_count: 1,
                 dimension: wgpu::TextureDimension::D2,
-                format: self.target_format,
+                format,
                 usage: wgpu::TextureUsages::RENDER_ATTACHMENT
                     | wgpu::TextureUsages::TEXTURE_BINDING,
                 view_formats: &[],
             });
-            let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-            self.intermediate = Some(Intermediate {
-                texture,
-                view,
-                size,
-            });
-        }
-        &self
-            .intermediate
-            .as_ref()
-            .expect("intermediate set above")
-            .view
+            Intermediate { texture, size }
+        })
     }
 
-    /// Render one frosted frame. `frame` carries the tessellated egui output + the target; the
-    /// returned [`RepaintPolicy`] is the host's to apply to its `Context` (§4.6).
+    /// Render one frosted frame. `ctx` is the host's egui context: the adapter applies the
+    /// surfaces' [`RepaintPolicy`] to it (`request_repaint` for `Live`, `request_repaint_after`
+    /// for `Bounded`) so a stale backdrop cannot be silently forgotten (§4.6 — the adapter, not
+    /// the host, drives the repaint). `frame` carries the tessellated egui output + the target.
     pub fn render_frame(
         &mut self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
+        ctx: &egui::Context,
         blur: &mut WgpuBlur,
         frame: FrameInput<'_>,
         surfaces: &[Surface],
-    ) -> Result<RepaintPolicy, BlurError> {
+    ) -> Result<(), BlurError> {
         // 1. Texture deltas first.
         for (id, delta) in &frame.textures_delta.set {
             self.renderer.update_texture(device, queue, *id, delta);
@@ -205,13 +226,23 @@ impl OwnLoopRenderer {
             &frame.screen,
         );
 
+        // One owned view of the intermediate, used by reference for the egui→intermediate pass
+        // (the pass clones it via forget_lifetime) and then moved into the blur `SourceView`.
+        let size = frame.screen.size_in_pixels;
+        let intermediate_view = self
+            .intermediate(device, size)
+            .texture
+            .create_view(&wgpu::TextureViewDescriptor::default());
+
         // 3 + 4. Render egui into the intermediate (blur source) and into the target (display).
         //        Each render pass is scoped and dropped before the encoder is touched again — a
         //        live `forget_lifetime` pass plus an encoder op is a runtime panic (M4).
-        let size = frame.screen.size_in_pixels;
         {
-            let view = self.intermediate_view(device, size);
-            let mut pass = begin_clear_pass(&mut encoder, view, "backdrop-blur egui→intermediate");
+            let mut pass = begin_clear_pass(
+                &mut encoder,
+                &intermediate_view,
+                "backdrop-blur egui→intermediate",
+            );
             self.renderer
                 .render(&mut pass, frame.paint_jobs, &frame.screen);
         }
@@ -224,12 +255,7 @@ impl OwnLoopRenderer {
 
         // 5. Blur + composite each surface, sampling the intermediate, writing the target.
         let source = SourceView {
-            view: self
-                .intermediate
-                .as_ref()
-                .expect("intermediate set above")
-                .texture
-                .create_view(&wgpu::TextureViewDescriptor::default()),
+            view: intermediate_view,
             size,
             color_space: SourceColorSpace::GammaSrgb,
         };
@@ -256,7 +282,13 @@ impl OwnLoopRenderer {
             self.renderer.free_texture(id);
         }
 
-        Ok(strongest_repaint(surfaces))
+        // The adapter drives liveness: keep the backdrop fresh for Live/Bounded surfaces.
+        match strongest_repaint(surfaces) {
+            RepaintPolicy::Live => ctx.request_repaint(),
+            RepaintPolicy::Bounded(after) => ctx.request_repaint_after(after),
+            RepaintPolicy::Static => {}
+        }
+        Ok(())
     }
 }
 
@@ -265,6 +297,12 @@ pub struct FrameInput<'a> {
     /// The display target (swapchain view); must have the adapter's `target_format`.
     pub target: &'a wgpu::TextureView,
     /// The tessellated egui primitives for this frame.
+    ///
+    /// **Backdrop-Root rule (host obligation):** v1 renders this *same* frame into both the blur
+    /// source and the display, and the blur samples the surface's own screen area. So the host
+    /// must **not** paint a frosted surface's own background/fill into these jobs — otherwise the
+    /// blur samples the panel's fill instead of the content behind it. The crate owns only the
+    /// background; the surface's foreground is the host's, painted in its own later pass.
     pub paint_jobs: &'a [egui::ClippedPrimitive],
     /// The textures egui created/freed this frame.
     pub textures_delta: &'a egui::TexturesDelta,
@@ -301,8 +339,23 @@ fn begin_clear_pass(
 
 #[cfg(test)]
 mod tests {
+    // Coverage boundary: these default-tier tests cover the backend-agnostic surface→prepare/record
+    // mapping (`composite_surfaces`), the repaint fold, and the format guard. `render_frame`'s
+    // frame ordering (update_buffers → scoped passes dropped before encoder reuse → single chained
+    // submit) needs real egui-wgpu + a GPU, so it is covered only by the gated `own_loop_render`
+    // test (`--features image-snapshots`, lavapipe), not the always-on `cargo test`.
     use super::*;
     use std::cell::RefCell;
+
+    #[test]
+    fn is_supported_target_accepts_only_non_srgb_unorm() {
+        assert!(is_supported_target(wgpu::TextureFormat::Rgba8Unorm));
+        assert!(is_supported_target(wgpu::TextureFormat::Bgra8Unorm));
+        // sRGB targets would double-decode the gamma intermediate — rejected.
+        assert!(!is_supported_target(wgpu::TextureFormat::Rgba8UnormSrgb));
+        assert!(!is_supported_target(wgpu::TextureFormat::Bgra8UnormSrgb));
+        assert!(!is_supported_target(wgpu::TextureFormat::Rgba16Float));
+    }
 
     /// A recording fake backend: all associated types are `()`, so the surface→prepare/record
     /// wiring runs with no GPU. It returns `Ok(None)` for a zero-area region (the no-op), mirroring
