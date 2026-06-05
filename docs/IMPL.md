@@ -6,10 +6,22 @@
 > picom-vs-KWin half-pixel warning, and **travels into the new repo** as `docs/RESEARCH.md`).
 > This doc is the *how & in what order*. Each sub-step is a **compiling, testable increment**.
 >
-> **Status:** IMPL plan — revised after a 5-lens adversarial review (6 critical / 19 major; spine sound,
-> defects in test-tiering, color/format correctness, and three deferred type decisions). Pending Abdu
-> sign-off. No code until sign-off. The crate lives in its **own new repo**; this plan is kept in
-> `abdu-egui-ui/architecture/` during design and moves with the crate.
+> **Status:** **v1 IMPL increment IMPLEMENTED** (2026-06-05) in the dedicated repo
+> `github.com/abdu-benayad/backdrop-blur` (local `/home/abdu/Downloads/backdrop-blur`, unpushed).
+> Steps 1 (core + glow gate), 2 (wgpu separable Gaussian), 3 (egui own-loop + winit example) are
+> done and committed on `main`, green on every commit, GPU-verified on lavapipe (incl. a real-egui
+> own-loop readback). core + wgpu each survived an adversarial multi-lens review (14 + 11 findings,
+> acted on). **Deferred follow-ons:** 2b′ (dual-Kawase) and 2d (analytic halo probe).
+>
+> **As-built divergences from the plan below** (acted on during review): the seam split into
+> `BackdropBlur` + a `GrabPass` sub-trait so the wgpu backend stays total (no impossible
+> `grab_source` stub); the wgpu `SourceTexture` is a `SourceView { view, size, color_space }`
+> carrying what a bare `wgpu::TextureView` can't; the composite draws over the **full target** via
+> `@builtin(position)` (real straight-edge AA + clip-registration) rather than a per-rect viewport;
+> a generation-counter `debug_assert` implements the K1 guard; wgpu resource creation cannot return
+> `Result`, so `BlurError::ResourceCreation` is glow-only and `UnsupportedTarget` is the one
+> synchronous wgpu error; the own-loop renders egui **twice** (intermediate + target) rather than a
+> blit. MSRV is **1.92** (egui 0.34), not 1.85.
 
 ## 0. What already exists (and what doesn't)
 
