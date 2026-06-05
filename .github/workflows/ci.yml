@@ -65,3 +65,23 @@ jobs:
         run: |
           cargo test -p backdrop-blur-wgpu --features image-snapshots -- --test-threads=1
           cargo test -p backdrop-blur-egui --features image-snapshots -- --test-threads=1
+
+  examples:
+    name: excluded examples (build only)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.95.0
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: winit build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwayland-dev libxkbcommon-dev
+      - name: glow gate (the seam-fits-glow proof)
+        run: cargo build --manifest-path examples/glow-gate/Cargo.toml
+      - name: winit own-loop example
+        run: |
+          cargo clippy --manifest-path examples/egui-wgpu-panel/Cargo.toml -- -D warnings
+          cargo build --manifest-path examples/egui-wgpu-panel/Cargo.toml

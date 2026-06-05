@@ -15,5 +15,10 @@
 
 mod own_loop;
 
-pub use backdrop_blur_core::RepaintPolicy;
+// Re-export everything an own-loop consumer needs through this one facade crate: the glass
+// material vocabulary (used in `Surface`), the wgpu backend (`render_frame` drives it), and the
+// egui-wgpu screen descriptor (`FrameInput` carries it).
+pub use backdrop_blur_core::{BlurStrength, CornerRadius, LinearRgba, RepaintPolicy, Tint};
+pub use backdrop_blur_wgpu::{SourceColorSpace, SourceView, WgpuBlur};
+pub use egui_wgpu::ScreenDescriptor;
 pub use own_loop::{FrameInput, OwnLoopRenderer, Surface, strongest_repaint};

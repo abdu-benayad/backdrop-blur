@@ -1,0 +1,15 @@
+[package]
+name = "egui-wgpu-panel"
+version = "0.0.0"
+edition = "2024"
+publish = false
+description = "Own-loop demo: a frosted-glass panel over animating content, driven by egui-winit + egui-wgpu + backdrop-blur-egui. The only crate in the workspace that pulls winit (hence excluded)."
+
+# A SEPARATE package, excluded from the workspace, so winit never enters the portable loop.
+[dependencies]
+backdrop-blur-egui = { path = "../../crates/backdrop-blur-egui" }
+egui = "0.34"
+egui-winit = "0.34"
+wgpu = "29"
+winit = "0.30"
+pollster = "0.4"
