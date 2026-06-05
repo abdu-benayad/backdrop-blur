@@ -166,9 +166,11 @@ backends demand it: **wgpu** uploads uniforms/textures through the **Queue** (no
 upload phase needs the queue and the record phase needs the encoder; **glow** is immediate-mode
 (`prepare` = grab + upload via the context, `record` = draws). The split keeps each phase honest about
 the resources it actually holds, and leaves the door open for any future host whose render lifecycle is
-itself two-phase. A producer method `grab_source` reserves the glow grab-pass socket now. The
-associated types are the backend's resource universe — distinct per backend, which is exactly why the
-trait is **not object-safe** and backends are **separate crates** (the `wgpu-types` → `wgpu-hal`
+itself two-phase. The grab-pass producer lives in a **separate `GrabPass` trait** (below) that only
+grab-pass backends implement, so the own-loop wgpu backend never has to stub a `grab_source` it cannot
+perform — the seam stays total (added after the 1d review; replaces an impossible "wgpu default impl").
+The associated types are the backend's resource universe — distinct per backend, which is exactly why the
+traits are **not object-safe** and backends are **separate crates** (the `wgpu-types` → `wgpu-hal`
 model). Static dispatch, monomorphised.
 
 ```rust
@@ -180,24 +182,11 @@ pub trait BackdropBlur {
     type Device;        // wgpu::Device         | glow::Context
     type Queue;         // wgpu::Queue          | ()            (glow uploads via Device in prepare)
     type Encoder;       // wgpu::CommandEncoder | glow::Context (the immediate-mode draw handle)
-    type Framebuffer;   // ()                   | glow framebuffer  (the grab source; wgpu unused)
     type SourceTexture; // wgpu::TextureView    | glow::Texture     (sampleable backdrop)
     type Target;        // wgpu::TextureView    | glow framebuffer  (composite destination)
     type TargetFormat;  // wgpu::TextureFormat  | GLES internal-format enum
     type Prepared;      // opaque, OWNED per-call handle (no borrow of self) carrying the resolved
                         // payload (offsets, tint, mask, rect, the resource keys) from prepare -> record
-
-    /// Produce a sampleable backdrop source. Own-loop: the host's intermediate is already
-    /// sampleable (wgpu default impl hands it through / `Framebuffer = ()` unused). Grab-pass
-    /// (glow): blit + MSAA-resolve out of the live `framebuffer` for `region` — backend-specific
-    /// GL the host cannot do generically. This is the socket that keeps glow additive (S6).
-    fn grab_source(
-        &mut self,
-        device: &Self::Device,
-        queue: &Self::Queue,
-        framebuffer: &Self::Framebuffer,
-        region: Region,
-    ) -> Result<Self::SourceTexture, BlurError>;
 
     /// Phase 1 — has device + queue. Allocates/keys the ping-pong chain, lazily builds & caches
     /// pipelines (the fixed-scratch down/up pipelines once; the COMPOSITE pipeline per `target_format`,
@@ -225,6 +214,26 @@ pub trait BackdropBlur {
         target: &Self::Target,
         prepared: &Self::Prepared,
     ) -> Result<(), BlurError>;
+}
+
+/// The grab-pass socket — implemented *in addition to* `BackdropBlur` only by backends that must
+/// extract a sampleable source from a live framebuffer (glow; the deferred mainstream-egui path).
+/// Own-loop backends (wgpu) do NOT implement it — they receive an already-sampleable source — so
+/// `BackdropBlur` stays total and wgpu never stubs a method it cannot perform. This is the socket
+/// that keeps glow additive (S6); making it a separate trait (not a method on every backend) was
+/// the 1d-review fix for the impossible "wgpu default impl hands it through".
+pub trait GrabPass: BackdropBlur {
+    type Framebuffer;   // glow framebuffer (the grab READ source); wgpu never implements GrabPass
+
+    /// Blit + MSAA-resolve the `region` out of the live `framebuffer` into a sampleable
+    /// SourceTexture; the GL read-origin flip lives inside (K5), so no extra method is forced.
+    fn grab_source(
+        &mut self,
+        device: &Self::Device,
+        queue: &Self::Queue,
+        framebuffer: &Self::Framebuffer,
+        region: Region,
+    ) -> Result<Self::SourceTexture, BlurError>;
 }
 ```
 

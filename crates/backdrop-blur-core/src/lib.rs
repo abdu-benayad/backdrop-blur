@@ -11,7 +11,7 @@
 //! A caller describes a frosted surface with a [`BlurRequest`] — *where* the backdrop lives
 //! and the surface goes ([`Region`]s in physical pixels), and *what kind of glass* it is
 //! ([`BlurStrength`], [`Tint`], [`CornerRadius`]). Core resolves the algorithm-agnostic parts
-//! (a physical blur radius via [`BlurStrength::to_physical_radius`]; a clamped
+//! (a physical blur radius via [`BlurRequest::physical_blur_radius`]; a clamped
 //! [`ResolvedMask`]); the backend resolves the algorithm-specific parts (kernel offsets,
 //! pipelines) and does the GPU work.
 //!
@@ -31,4 +31,4 @@ pub use error::{BackendError, BlurError, BlurStage};
 pub use geometry::{BlurRequest, Region, ResolvedMask, Scale};
 pub use liveness::RepaintPolicy;
 pub use material::{BlurStrength, CornerRadius, LinearRgba, Tint};
-pub use seam::BackdropBlur;
+pub use seam::{BackdropBlur, GrabPass};

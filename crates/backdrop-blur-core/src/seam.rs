@@ -1,24 +1,32 @@
-//! The seam — the one trait each GPU backend implements. It is **two-phase** (`prepare` then
-//! `record`) because the backends demand it: wgpu uploads uniforms/textures through its
-//! **Queue** (not the encoder), so the upload phase needs the queue and the record phase needs
-//! only the encoder; glow is immediate-mode (`prepare` grabs + uploads via the context,
-//! `record` draws). A producer method `grab_source` reserves the glow grab-pass socket now,
-//! so adding that backend later is not a core rewrite (DESIGN §4.4).
+//! The seam — the traits each GPU backend implements.
+//!
+//! [`BackdropBlur`] is the universal seam: **two-phase** (`prepare` then `record`) because the
+//! backends demand it. wgpu uploads uniforms/textures through its **Queue** (not the encoder),
+//! so the upload phase needs the queue and the record phase needs only the encoder; glow is
+//! immediate-mode (`prepare` uploads via the context, `record` draws). Every backend implements
+//! this trait, and it is **total** — it contains no method a given backend cannot perform.
+//!
+//! [`GrabPass`] is a **separate, additive** trait for the grab-pass family only. The own-loop
+//! path (wgpu) hands the host's already-sampleable intermediate straight to `prepare` and never
+//! grabs, so forcing a `grab_source` onto every backend would make wgpu stub an impossible
+//! method (it cannot fabricate a source from nothing). Instead the grab-pass (glow) backend
+//! *additionally* implements `GrabPass` to blit a sampleable source out of a live framebuffer.
+//! This is the socket that keeps glow additive (DESIGN §4.4).
 //!
 //! The associated types are each backend's resource universe — distinct per backend, which is
-//! exactly why the trait is **not object-safe** and backends are **separate crates** (the
+//! exactly why these traits are **not object-safe** and backends are **separate crates** (the
 //! `wgpu-types` → `wgpu-hal` model). Dispatch is static, monomorphized.
 //!
-//! # Gate verdict (IMPL §1d): the trait is kept
+//! # Gate verdict (IMPL §1d): the seam is kept
 //!
 //! Before committing to this seam, the divergent backend was sketched against it: the
-//! `examples/glow-gate` crate maps the proven immediate-mode glow pipeline onto every
-//! associated type and method here, and **compiles**. Each type binds to a real glow type
-//! (`Device`/`Encoder` → `glow::Context`, `SourceTexture` → `glow::Texture`, …); the one `()`
-//! (`Queue`) is honest because glow uploads through its context rather than a queue; and the
-//! grab + origin flip live entirely inside `grab_source`, so no extra method is forced. v1
-//! therefore ships **with** this trait, not a concrete one-backend pair. See that crate's
-//! module docs for the full §3 decision table.
+//! `examples/glow-gate` crate maps the proven immediate-mode glow pipeline onto these traits —
+//! `BackdropBlur` for prepare/record and `GrabPass` for the grab — and **compiles**. Each type
+//! binds to a real glow type (`Device`/`Encoder` → `glow::Context`, `SourceTexture` →
+//! `glow::Texture`, `GrabPass::Framebuffer` → `glow::Framebuffer`, …); the one `()` (`Queue`)
+//! is honest because glow uploads through its context rather than a queue. v1 therefore ships
+//! **with** these traits, not a concrete one-backend pair. See that crate's module docs for
+//! the full §3 decision table.
 
 use crate::{BlurError, BlurRequest, Region};
 
@@ -29,11 +37,13 @@ use crate::{BlurError, BlurRequest, Region};
 /// # Lifecycle contract (v1)
 ///
 /// - **Serial `prepare` → `record` per surface.** v1 scope is a single frosted surface over a
-///   once-rendered backdrop; because the ping-pong scratch is shared, two
-///   surfaces are not prepared-then-both-recorded — each is prepared and recorded before the
-///   next. The [`Prepared`](Self::Prepared) handle is **owned** (it borrows nothing from the
-///   blurrer), so the contract does not rely on "record immediately follows prepare"; genuine
-///   multi-surface batching is deferred future work.
+///   once-rendered backdrop; because the ping-pong scratch is shared, two surfaces are not
+///   prepared-then-both-recorded — each is prepared and recorded before the next. The
+///   [`Prepared`](Self::Prepared) handle is **owned** (it borrows nothing from the blurrer), so
+///   the contract does not rely on "record immediately follows prepare"; genuine multi-surface
+///   batching is deferred future work. Because `Prepared` is owned, the types permit (but the
+///   contract forbids) preparing two surfaces against the shared scratch before recording
+///   either — the backend should debug-assert against an outstanding handle (K1).
 /// - **Single-threaded, frame-serial.** `prepare` takes `&mut self`, `record` takes `&self`.
 ///   The blurrer is **not** required to be `Send`/`Sync` in v1; a multi-threaded render loop
 ///   owns one per render thread.
@@ -44,9 +54,8 @@ pub trait BackdropBlur {
     type Queue;
     /// The command sink (`wgpu::CommandEncoder`; `glow::Context`, the immediate-mode handle).
     type Encoder;
-    /// The grab source for the grab-pass path (a glow framebuffer; `()` and unused on wgpu).
-    type Framebuffer;
-    /// A sampleable backdrop (`wgpu::TextureView`; `glow::Texture`).
+    /// A sampleable backdrop (`wgpu::TextureView`; `glow::Texture`). Own-loop backends receive
+    /// it from the host; grab-pass backends produce it via [`GrabPass::grab_source`].
     type SourceTexture;
     /// The composite destination (`wgpu::TextureView`; a glow framebuffer).
     type Target;
@@ -59,31 +68,17 @@ pub trait BackdropBlur {
     /// `prepare` to `record`. Owned — it borrows nothing from the blurrer.
     type Prepared;
 
-    /// Produce a sampleable backdrop source.
-    ///
-    /// - **Own-loop (wgpu):** the host's offscreen intermediate is already sampleable, so the
-    ///   backend hands it through (`Framebuffer = ()` unused).
-    /// - **Grab-pass (glow):** blit + MSAA-resolve out of the live `framebuffer` for `region` —
-    ///   backend-specific GL the host cannot do generically. This is the socket that keeps the
-    ///   glow backend purely additive.
-    fn grab_source(
-        &mut self,
-        device: &Self::Device,
-        queue: &Self::Queue,
-        framebuffer: &Self::Framebuffer,
-        region: Region,
-    ) -> Result<Self::SourceTexture, BlurError>;
-
     /// **Phase 1** — holds the device + queue. Allocates and keys the ping-pong chain, lazily
     /// builds and caches pipelines (the fixed-scratch down/up pipelines once; the composite
     /// pipeline per `target_format`), and resolves the payload into an owned
     /// [`Prepared`](Self::Prepared).
     ///
-    /// Returns `Ok(None)` when `request.source_region` is zero-sized or fully offscreen — a
-    /// **no-op**, valid input rather than an error (see [`Region::is_empty_or_offscreen`]);
-    /// `record` is then simply not called. Returns `Err` only on a real GPU fault.
+    /// Returns `Ok(None)` when `request.source_region` clips to nothing against `source` — a
+    /// zero-area or fully-offscreen region (see [`Region::clip_to`]). That is a **no-op**, valid
+    /// input rather than an error; `record` is then simply not called. Returns `Err` only on a
+    /// real GPU fault.
     ///
-    /// [`Region::is_empty_or_offscreen`]: crate::Region::is_empty_or_offscreen
+    /// [`Region::clip_to`]: crate::Region::clip_to
     fn prepare(
         &mut self,
         device: &Self::Device,
@@ -107,4 +102,26 @@ pub trait BackdropBlur {
         target: &Self::Target,
         prepared: &Self::Prepared,
     ) -> Result<(), BlurError>;
+}
+
+/// The **grab-pass** socket, implemented *in addition to* [`BackdropBlur`] only by backends that
+/// must extract a sampleable backdrop from a live framebuffer (glow; the deferred mainstream-egui
+/// path). Own-loop backends (wgpu) do **not** implement this — they receive an already-sampleable
+/// source — which is why it is a separate trait rather than a method every backend must stub.
+pub trait GrabPass: BackdropBlur {
+    /// The live framebuffer to grab from (a glow framebuffer). Distinct from
+    /// [`BackdropBlur::Target`]; it is the *read* source, not the composite destination.
+    type Framebuffer;
+
+    /// Produce a sampleable [`SourceTexture`](BackdropBlur::SourceTexture) by blitting (and
+    /// MSAA-resolving) the `region` out of the live `framebuffer` — backend-specific GL the host
+    /// cannot do generically. Any read-origin flip (GL's bottom-left vs top-left sampling) is
+    /// handled inside here, so no extra method is forced onto the seam.
+    fn grab_source(
+        &mut self,
+        device: &Self::Device,
+        queue: &Self::Queue,
+        framebuffer: &Self::Framebuffer,
+        region: Region,
+    ) -> Result<Self::SourceTexture, BlurError>;
 }

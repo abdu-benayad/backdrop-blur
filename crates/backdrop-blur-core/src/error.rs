@@ -40,7 +40,7 @@ pub enum BlurError {
     /// The grab-pass backend could not produce a sampleable source from the live framebuffer.
     /// (Reserved for the deferred glow path; the socket exists now so adding it is not a core
     /// rewrite.)
-    #[error("the grab source could not be produced from the framebuffer for region {region:?}")]
+    #[error("the grab source could not be produced from the framebuffer for region {region}")]
     GrabFailed {
         /// The region the grab was attempted for.
         region: Region,

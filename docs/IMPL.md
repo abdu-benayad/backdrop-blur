@@ -87,10 +87,12 @@ Record the sketch + decision in core's module docs. (Expectation: it fits — th
    the no-op *behavior* — `prepare → Ok(None)` — is asserted in the gated wgpu tier 2b, since core has no
    `prepare` to call — M6). *Green:* `cargo test -p backdrop-blur-core` (GPU-free, runs anywhere).
 
-1c. **The `BackdropBlur` trait** (DESIGN §4.4, post-M6): associated types incl. **owned `Prepared`**,
-   `prepare -> Result<Option<Self::Prepared>, BlurError>`, `record`, `grab_source`; doc contracts
-   (`source != target`, state-restore, composite-keyed-by-format). **Freeze the no-op shape (`Option`) and
-   the boxed error `source` here — they are types the gate sketches against, not comments.**
+1c. **The seam traits** (DESIGN §4.4, post-M6): `BackdropBlur` with associated types incl. **owned
+   `Prepared`**, `prepare -> Result<Option<Self::Prepared>, BlurError>`, `record`; plus the additive
+   **`GrabPass: BackdropBlur`** trait carrying `Framebuffer` + `grab_source` (split out post-1d-review so
+   the own-loop wgpu backend stays total). Doc contracts (`source != target`, state-restore,
+   composite-keyed-by-format). **Freeze the no-op shape (`Option`) and the boxed error `source` here — they
+   are types the gate sketches against, not comments.**
 
 1d. **THE GATE (§3).** The glow signature sketch against the frozen trait, in `examples/glow_gate.rs` or a
    `glow`-dev-dep test module. *Green:* the sketch compiles; decision recorded in core docs. **If it fails,
@@ -173,7 +175,7 @@ backdrop-blur/
   docs/RESEARCH.md                        NATIVE_BLUR_RESEARCH.md carried in (tap offsets, half-pixel warning)
   .github/workflows/ci.yml                default tier (any runner) + gated lavapipe tier (mesa-vulkan-drivers, --test-threads=1) + separate example build
   crates/
-    backdrop-blur-core/                   #![forbid(unsafe)]; deps: thiserror, bytemuck (derives)
+    backdrop-blur-core/                   #![forbid(unsafe)]; deps: thiserror ONLY (no bytemuck — the GPU-uniform struct lives in -wgpu per S2)
       src/{lib,material,geometry,error,liveness,seam}.rs   types + the BackdropBlur trait + Region no-op predicate
     backdrop-blur-wgpu/                    #![forbid(unsafe)]; deps: core, wgpu, bytemuck; feat image-snapshots
       src/{lib,cache}.rs                   WgpuBlur, impl BackdropBlur, PingPongKey, the #[repr(C)] GPU-uniform struct + layout test
