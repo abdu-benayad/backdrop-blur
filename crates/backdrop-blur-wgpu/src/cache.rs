@@ -55,6 +55,14 @@ pub(crate) fn use_dual_kawase(physical_radius: f32) -> bool {
 /// Dual-Kawase mip depth `N` for a physical radius. Each down/up pass ~doubles the effective
 /// radius, so `N ≈ log2(radius)`, clamped to `[1, MAX_KAWASE_LEVELS]`. The pyramid then has
 /// `N + 1` levels (level 0 = full, level `i` = `base >> i`).
+///
+/// **Deliberate divergence from KWin:** the per-pass sampling spread is fixed at one half-texel
+/// (no per-pass `offset` scalar — see the shader headers), so radius granularity is **log2-
+/// quantized**: every radius in a band (e.g. 16–22 → `N=4`, 23–45 → `N=5`) blurs identically and
+/// the amount doubles at each band boundary. This suits per-component design-token radii; a
+/// continuous-slider host that wants smooth control would add a fractional-`log2` offset to
+/// [`crate::uniforms::KawaseParams`] and scale the taps by it (KWin's continuous dial), which v1
+/// deliberately omits (YAGNI).
 pub(crate) fn resolve_kawase_levels(physical_radius: f32) -> u32 {
     let levels = physical_radius.max(2.0).log2().round() as i32;
     levels.clamp(1, MAX_KAWASE_LEVELS as i32) as u32
@@ -145,6 +153,10 @@ mod tests {
         assert_eq!(resolve_kawase_levels(32.0), 5);
         assert_eq!(resolve_kawase_levels(10000.0), MAX_KAWASE_LEVELS);
         assert_eq!(resolve_kawase_levels(2.0), 1); // clamped floor
+        // Pin the round() band boundary (log2 = 4.5 at radius ≈ 22.6), so the level-count policy
+        // is locked rather than incidental — swapping round/floor/ceil would change these.
+        assert_eq!(resolve_kawase_levels(22.0), 4);
+        assert_eq!(resolve_kawase_levels(23.0), 5);
     }
 
     #[test]

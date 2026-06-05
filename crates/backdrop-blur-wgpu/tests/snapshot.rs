@@ -444,13 +444,15 @@ fn dual_kawase_blurs_a_large_radius_edge() {
     // The hard red/blue edge under a large (dual-Kawase) blur: the panel centre, on the seam, is a
     // strong mix — proving the multi-level pyramid actually reaches across the seam (a zero/wrong
     // half-pixel offset would leave the seam sharp and the centre near-pure-blue).
+    // Radius 18 (N=4 dual-Kawase) — small enough vs the 100px panel that the red↔blue transition
+    // is a measurable band, not a saturated wash (radius 30 mixes the whole panel).
     let (device, queue) = software_device();
     let edge = backdrop_texture(&device, &queue);
     let out = frost_and_read(
         &device,
         &queue,
         &edge,
-        30.0,
+        18.0,
         Tint::new(LinearRgba::new(0.0, 0.0, 0.0, 0.1)),
     );
 
@@ -458,6 +460,20 @@ fn dual_kawase_blurs_a_large_radius_edge() {
     assert!(
         r > 40 && b > 40,
         "a large dual-Kawase blur must mix red and blue across the seam, got r={r} b={b}"
+    );
+    // Transition-width guard: count the mixed (both-channel) pixels along the seam row inside the
+    // panel. This bounds the effective blur radius, so a half-pixel offset scaled 2× (transition
+    // ~doubles) or 0.5× (~halves) falls outside the band — the energy test and the binary mix
+    // check above are offset-magnitude-invariant and cannot see that.
+    let mixed = (50u32..150)
+        .filter(|&x| {
+            let [r, _, b, _] = pixel(&out, x, 100);
+            r > 50 && b > 50
+        })
+        .count();
+    assert!(
+        (30..=72).contains(&mixed),
+        "dual-Kawase transition width must match radius 30 (a 2×/0.5× half-pixel error escapes this band), got {mixed} mixed px"
     );
     // Outside the panel stays untouched backdrop red.
     let [r, _, b, _] = pixel(&out, 10, 100);

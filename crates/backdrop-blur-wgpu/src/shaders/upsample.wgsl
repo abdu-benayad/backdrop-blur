@@ -3,7 +3,9 @@
 // + 4 diagonals×2 (at ±halfpixel), ÷12 (energy-preserving). Linear scratch only.
 //
 // `halfpixel = 0.5 / size(sampled texture)` — the smaller level being read this pass (KWin's
-// convention). Matches the downsample so the round trip is symmetric.
+// convention). Matches the downsample so the round trip is symmetric. The per-pass spread is fixed
+// at one half-texel (no continuous `offset` scalar), so radius is log2-quantized — see the
+// downsample header and `cache::resolve_kawase_levels`.
 
 struct KawaseParams {
     halfpixel: vec2<f32>,

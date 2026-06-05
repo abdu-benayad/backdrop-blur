@@ -5,6 +5,10 @@
 //
 // `halfpixel = 0.5 / size(sampled texture)` (KWin's convention; do NOT mix picom's). The diagonal
 // corners sit one half-texel out, sampling the four quadrant centers of the larger source.
+//
+// The per-pass spread is fixed at one half-texel — no `offset` scalar like KWin's continuous
+// strength dial — so radius granularity is log2-quantized by the level count (see
+// `cache::resolve_kawase_levels`). A deliberate v1 divergence (discrete design-token radii).
 
 struct KawaseParams {
     halfpixel: vec2<f32>,
