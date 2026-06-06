@@ -154,3 +154,7 @@ jobs:
         run: |
           cargo clippy --manifest-path examples/frost-gallery/Cargo.toml -- -D warnings
           cargo build --manifest-path examples/frost-gallery/Cargo.toml
+      - name: eframe-on-glow grab-pass preview (depends on the grab-pass adapter API)
+        run: |
+          cargo clippy --manifest-path examples/eframe-glow-panel/Cargo.toml -- -D warnings
+          cargo build --manifest-path examples/eframe-glow-panel/Cargo.toml
