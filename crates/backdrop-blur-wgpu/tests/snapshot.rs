@@ -588,5 +588,8 @@ fn opacity_fades_the_surface_linearly_toward_the_destination() {
 
     // Sanity: the fade actually moves the pixel (F differs from D), or the oracle is vacuous.
     let moved = (0..3).any(|c| pixel(&full, cx, cy)[c] != pixel(&out0, cx, cy)[c]);
-    assert!(moved, "the frost must change the interior pixel, else the oracle proves nothing");
+    assert!(
+        moved,
+        "the frost must change the interior pixel, else the oracle proves nothing"
+    );
 }

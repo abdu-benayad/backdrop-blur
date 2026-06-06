@@ -571,7 +571,17 @@ fn composite_leaves_content_outside_the_panel_untouched() {
     let scene = flat_backdrop(&gl, [1.0, 0.0, 0.0, 1.0]); // red backdrop
     let p = panel([48, 48], [32, 32]);
     let seed = [0.0, 1.0, 0.0, 1.0]; // green seed
-    let target = frost(&mut gl, &mut blur, &scene, p, 6.0, 0.0, no_tint(), seed, 1.0);
+    let target = frost(
+        &mut gl,
+        &mut blur,
+        &scene,
+        p,
+        6.0,
+        0.0,
+        no_tint(),
+        seed,
+        1.0,
+    );
 
     // Corner of the framebuffer, far from the panel: still the green seed.
     let corner = read_texture_rgba8(&gl, target.tex, 8, 8);
@@ -857,9 +867,39 @@ fn opacity_fades_the_surface_linearly_toward_the_destination() {
     let p = panel([24, 24], [80, 80]);
     let seed = [0.05, 0.05, 0.05, 1.0];
 
-    let t0 = frost(&mut gl, &mut blur, &scene, p, 12.0, 0.0, no_tint(), seed, 0.0);
-    let thalf = frost(&mut gl, &mut blur, &scene, p, 12.0, 0.0, no_tint(), seed, 0.5);
-    let t1 = frost(&mut gl, &mut blur, &scene, p, 12.0, 0.0, no_tint(), seed, 1.0);
+    let t0 = frost(
+        &mut gl,
+        &mut blur,
+        &scene,
+        p,
+        12.0,
+        0.0,
+        no_tint(),
+        seed,
+        0.0,
+    );
+    let thalf = frost(
+        &mut gl,
+        &mut blur,
+        &scene,
+        p,
+        12.0,
+        0.0,
+        no_tint(),
+        seed,
+        0.5,
+    );
+    let t1 = frost(
+        &mut gl,
+        &mut blur,
+        &scene,
+        p,
+        12.0,
+        0.0,
+        no_tint(),
+        seed,
+        1.0,
+    );
 
     // Panel interior (panel = [24,24]+80x80), coverage = 1.
     let (cx, cy) = (64, 64);
