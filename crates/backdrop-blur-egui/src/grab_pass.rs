@@ -36,9 +36,15 @@ pub struct GrabPassRenderer {
     blur: Arc<Mutex<GlowBlur>>,
     /// Set true at paint-callback entry whenever a frost callback actually fires (egui skips a
     /// fully-clipped callback); the host can poll [`took_effect`](Self::took_effect) after the frame
-    /// to learn whether the blur ran (the result cannot be returned synchronously from a callback —
-    /// DESIGN §7).
+    /// to learn whether the callback fired (the result cannot be returned synchronously from a
+    /// callback — DESIGN §7). It signals *the callback ran*, not *the blur composited*: a
+    /// clipped-empty or failed frost still sets it.
     ran: Arc<AtomicBool>,
+    /// Throttles the best-effort frost-failure warning to once per failure episode: set the first
+    /// time a [`frost`](Self::frost) callback errors, cleared on the next success. Under
+    /// [`RepaintPolicy::Live`] the callback runs every frame, so without this latch a
+    /// persistently-failing context would flood the log (DESIGN §7's "warn once").
+    warned: Arc<AtomicBool>,
 }
 
 impl GrabPassRenderer {
@@ -52,15 +58,23 @@ impl GrabPassRenderer {
         Ok(Self {
             blur: Arc::new(Mutex::new(blur)),
             ran: Arc::new(AtomicBool::new(false)),
+            warned: Arc::new(AtomicBool::new(false)),
         })
     }
 
     /// Free the backend's GL objects. Call from `eframe::App::on_exit` while the context is current
-    /// (DESIGN §11). Idempotent. A poisoned lock is ignored (nothing left to free safely).
+    /// (DESIGN §11). Idempotent. Recovers a poisoned lock so the GL objects are still freed after a
+    /// prior frost panic — otherwise they would leak (DESIGN §6/§12: the poisoned path is recovered,
+    /// never silently dropped).
     pub fn destroy(&self, gl: &glow::Context) {
-        if let Ok(mut blur) = self.blur.lock() {
-            blur.destroy(gl);
-        }
+        let mut guard = match self.blur.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => {
+                self.blur.clear_poison();
+                poisoned.into_inner()
+            }
+        };
+        guard.destroy(gl);
     }
 
     /// Whether a frost paint callback has fired since the last call (reads **and resets** the flag).
@@ -85,6 +99,7 @@ impl GrabPassRenderer {
 
         let blur = Arc::clone(&self.blur);
         let ran = Arc::clone(&self.ran);
+        let warned = Arc::clone(&self.warned);
         let callback = egui_glow::CallbackFn::new(move |info, painter| {
             // Flag at callback ENTRY (DESIGN §7): record that the callback fired this frame, before
             // any early-out, so `took_effect` is honest even when the region clips to nothing.
@@ -94,8 +109,20 @@ impl GrabPassRenderer {
             let Some((region, framebuffer_size)) = callback_region(&info) else {
                 return; // the panel clipped to nothing — a no-op
             };
-            let Ok(mut blur) = blur.lock() else {
-                return; // poisoned lock — skip this frost rather than panic inside paint
+            // A poisoned lock means a prior frost panicked mid-blur. GlowBlur is a bag of GL handles
+            // with no invariant a panic can corrupt, so clear the poison and recover the guard rather
+            // than leave frost permanently dead and silent (DESIGN §6/§12: log_err + flat fallback,
+            // never silently skipped). clear_poison makes the warning self-limiting — once per panic,
+            // not once per frame under Live.
+            let mut guard = match blur.lock() {
+                Ok(guard) => guard,
+                Err(poisoned) => {
+                    log::warn!(
+                        "backdrop-blur grab-pass mutex was poisoned by a prior panic; recovered"
+                    );
+                    blur.clear_poison();
+                    poisoned.into_inner()
+                }
             };
 
             // Material off the surface, geometry from the GL-origin region; both source and target
@@ -109,9 +136,17 @@ impl GrabPassRenderer {
                 opacity: surface.opacity,
             };
             let target = current_draw_framebuffer(gl);
-            if let Err(e) = blur.frost_region(gl, target, region, framebuffer_size, &request) {
-                // A paint callback cannot propagate an error; the frost is best-effort.
-                log::warn!("backdrop-blur grab-pass frost failed: {e}");
+            match guard.frost_region(gl, target, region, framebuffer_size, &request) {
+                // Recovered (or never failed) — re-arm the once-per-episode failure warning below.
+                Ok(()) => warned.store(false, Ordering::Relaxed),
+                // A paint callback cannot propagate an error; the frost is best-effort. Warn ONCE per
+                // failure episode (DESIGN §7): under RepaintPolicy::Live this runs every frame, so an
+                // unthrottled warn floods a kiosk log. The format! runs only on the first bad frame.
+                Err(e) => {
+                    if !warned.swap(true, Ordering::Relaxed) {
+                        log::warn!("backdrop-blur grab-pass frost failed: {e}");
+                    }
+                }
             }
         });
 

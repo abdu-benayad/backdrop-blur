@@ -219,7 +219,7 @@ Every `Err` has a handler ending in a flat fallback. The promise to the consumer
 - **One glow shader source:** identical GLSL ES 3.00 on GL 3.3 / GLES 3.0 / WebGL2 via header adaptation.
 - **wgpu untouched:** glow's premultiplied composite is a separate GLSL file producing pixels algebraically identical to wgpu's frozen straight-alpha WGSL; no wgpu edit, no shared flag.
 - **Total failure model:** every failure is a `Result` ending in flat fallback; no panic, no silent swallow.
-- **No leaks:** scratch is evicted last-frame-used; `Drop` deletes the rest (against a live context only).
+- **No leaks:** scratch is evicted last-frame-used; everything else is freed by an explicit `destroy(&glow::Context)` the host calls from `on_exit`. `Drop` issues **no GL** — it `log_warn`s and leaks if `destroy` was skipped, never deleting against a possibly-dead context (§6, §11).
 
 ---
 

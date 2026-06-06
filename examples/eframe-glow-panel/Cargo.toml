@@ -14,7 +14,7 @@ description = "Preview: a real eframe-on-glow app frosting a panel through backd
 # (default-features = false drops winit/default, so they must be named — and the kiosk is Wayland).
 eframe = { version = "0.34", default-features = false, features = ["glow", "default_fonts", "x11", "wayland"] }
 egui = "0.34"
-glow = "0.17"
-# The grab-pass adapter (no own-loop/wgpu).
+# The grab-pass adapter (no own-loop/wgpu). `glow` is consumed through it
+# (`backdrop_blur_egui::glow`) rather than pinned here, so this consumer cannot skew off the glow the
+# adapter is typed against — the structural guarantee `pub use glow` exists to give.
 backdrop-blur-egui = { path = "../../crates/backdrop-blur-egui", default-features = false, features = ["grab-pass"] }
-backdrop-blur-core = { path = "../../crates/backdrop-blur-core" }

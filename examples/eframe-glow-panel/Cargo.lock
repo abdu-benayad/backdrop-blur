@@ -523,11 +523,9 @@ dependencies = [
 name = "eframe-glow-panel"
 version = "0.0.0"
 dependencies = [
- "backdrop-blur-core",
  "backdrop-blur-egui",
  "eframe",
  "egui",
- "glow",
 ]
 
 [[package]]

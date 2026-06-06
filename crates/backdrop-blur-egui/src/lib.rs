@@ -44,3 +44,12 @@ pub use own_loop::{FrameInput, OwnLoopRenderer, is_supported_target, strongest_r
 // Grab-pass path: the eframe-on-glow adapter. Gated so an own-loop-only build pulls no glow/egui_glow.
 #[cfg(feature = "grab-pass")]
 pub use grab_pass::GrabPassRenderer;
+
+// Re-export the exact `glow` this crate's public API ([`GrabPassRenderer::new`]/`destroy`) is typed
+// against, so a consumer writes `backdrop_blur_egui::glow::Context` and is structurally pinned to the
+// same `glow` as the adapter. Without this a consumer picks its own `glow` version; a skew from the
+// one eframe hands back at `new` surfaces as a baffling "expected `glow::Context`, found
+// `glow::Context`" with no breadcrumb. Re-exporting the crate (the eframe-ecosystem norm) turns the
+// footgun into a compile-time guarantee.
+#[cfg(feature = "grab-pass")]
+pub use glow;
