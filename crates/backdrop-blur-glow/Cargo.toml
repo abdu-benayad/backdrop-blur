@@ -1,0 +1,30 @@
+[package]
+name = "backdrop-blur-glow"
+version = "0.1.0"
+description = "glow (OpenGL 3.3 / GLES 3.0 / WebGL2) grab-pass backend for backdrop-blur: real frosted glass for eframe-on-glow and the cage kiosk — grab a region of the live framebuffer, blur it, composite the frosted surface back."
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[dependencies]
+backdrop-blur-core = { workspace = true }
+glow = { workspace = true }
+# Uncatchable structured warning for the no-GL-in-Drop teardown contract (DESIGN §11): a backend
+# dropped without an explicit `destroy(&gl)` leaks GL objects, which we can only warn about.
+log = { workspace = true }
+
+[features]
+# ALL GPU tests live behind this. Plain `cargo test --workspace` therefore runs only this crate's
+# Tier-0 (pure, no-GL) tests, keeping the default tier GPU-free (IMPL §1.2). The native
+# EGL-surfaceless harness and every readback test are compiled only with this feature.
+gl-snapshots = []
+
+# The EGL-surfaceless headless-GL harness + the native readback tests are dev-only and cannot
+# build on wasm (no EGL there). Split by target so the wasm tier (step 4b) never sees them.
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+khronos-egl = { version = "6", features = ["dynamic"] }
+libloading = "0.8"

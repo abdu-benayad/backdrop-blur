@@ -7,10 +7,13 @@
 [workspace]
 resolver = "3"
 members = ["crates/*"]
-# Throwaway/standalone packages kept OUT of the workspace so `cargo build --workspace`
-# and `cargo clippy --workspace --all-targets` never compile glow or winit, keeping the
-# default verification tier portable to any machine (IMPL §1d/§3, §8). Each builds in its
-# own job via `--manifest-path`.
+# Standalone winit-pulling packages kept OUT of the workspace so `cargo build --workspace`
+# and `cargo clippy --workspace --all-targets` never compile winit, keeping the default
+# verification tier portable to any machine (IMPL §8). NOTE: `backdrop-blur-glow` IS a
+# workspace member — glow is build-script-free and compiles with no GL present, and ALL its
+# GPU tests are `gl-snapshots`-gated, so `cargo test --workspace` stays GPU-free (the unsafe
+# crate gains clippy + the undocumented-unsafe-blocks lint as a bonus; IMPL §1.2). Each
+# excluded package builds in its own job via `--manifest-path`.
 exclude = ["examples/glow-gate", "examples/egui-wgpu-panel", "examples/frost-gallery"]
 
 [workspace.package]
@@ -28,6 +31,7 @@ categories = ["graphics", "gui", "rendering"]
 # Internal crates — path + version so they are publishable as a set.
 backdrop-blur-core = { path = "crates/backdrop-blur-core", version = "0.1.0" }
 backdrop-blur-wgpu = { path = "crates/backdrop-blur-wgpu", version = "0.1.0" }
+backdrop-blur-glow = { path = "crates/backdrop-blur-glow", version = "0.1.0" }
 
 # Error model — thiserror 2 (structured variants, never a String error). Core forbids
 # unsafe and has no GPU dep, so it cannot name a backend error: BlurError carries a
@@ -35,11 +39,16 @@ backdrop-blur-wgpu = { path = "crates/backdrop-blur-wgpu", version = "0.1.0" }
 thiserror = "2"
 
 # GPU plumbing — pinned to exactly what the first consumer (abdu-egui-ui) resolves,
-# so eventual integration is friction-free. No `glow` pin: the glow backend is deferred
-# past v1 (DESIGN §0, IMPL M3) and a dead pin would only invite drift.
+# so eventual integration is friction-free.
 bytemuck = { version = "1", features = ["derive"] }
 wgpu = "29"
 egui = "0.34"
 egui-wgpu = { version = "0.34", default-features = false }
 # Headless AccessKit-tree + interaction testing for the egui adapter (dev-dep).
 egui_kittest = "0.34"
+# glow — the OpenGL/GLES/WebGL2 backend (the grab-pass path: eframe-on-glow + the cage kiosk).
+# Build-script-free (pure runtime-loaded fn pointers), so `backdrop-blur-glow` compiles on any
+# runner with no GL present; its GPU tests are `gl-snapshots`-gated (DESIGN §5, IMPL §1.2).
+glow = "0.17"
+# Uncatchable structured warning for the glow backend's no-GL-in-Drop teardown contract.
+log = "0.4"

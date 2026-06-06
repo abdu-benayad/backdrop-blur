@@ -90,6 +90,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "backdrop-blur-glow"
+version = "0.1.0"
+dependencies = [
+ "backdrop-blur-core",
+ "glow",
+ "khronos-egl",
+ "libloading",
+ "log",
+]
+
+[[package]]
 name = "backdrop-blur-wgpu"
 version = "0.1.0"
 dependencies = [
