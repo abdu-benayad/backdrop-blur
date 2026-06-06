@@ -96,6 +96,43 @@ jobs:
           cargo test -p backdrop-blur-wgpu --features image-snapshots -- --test-threads=1
           cargo test -p backdrop-blur-egui --features image-snapshots -- --test-threads=1
 
+  gl-native:
+    # The glow backend's Tier-1 readback tests on a real GL context (grab / blur / composite). The
+    # EGL-surfaceless harness tries the NVIDIA device-platform path, then the default display; on a
+    # headless Mesa runner `EGL_PLATFORM=surfaceless` + software GL resolves to llvmpipe. All glow
+    # GPU tests are `gl-snapshots`-gated, so they run only here, never in the default tier.
+    name: gated GL tier (glow, EGL-surfaceless)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.95.0
+      - uses: Swatinem/rust-cache@v2
+      - name: install Mesa software GL + EGL
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libegl1-mesa-dev libgl1-mesa-dri libgles2-mesa-dev
+      - name: gated GL readback tests (grab / blur / composite)
+        env:
+          EGL_PLATFORM: surfaceless
+          LIBGL_ALWAYS_SOFTWARE: "1"
+        # --test-threads=1: each test makes its own EGL context; parallel contexts exhaust the
+        # surfaceless display.
+        run: cargo test -p backdrop-blur-glow --features gl-snapshots -- --test-threads=1
+
+  wasm:
+    # The glow backend must stay buildable for WebGL2 (wasm32), the design's web-first target.
+    # Compile-only here; the headless-Chromium WebGL2 readback tier is a separate (deferred) job.
+    name: wasm32 build (WebGL2 readiness)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.95.0
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+      - name: build the glow backend for wasm32 (the WebGL2 target)
+        run: cargo build -p backdrop-blur-glow --target wasm32-unknown-unknown
+
   examples:
     name: excluded examples (build only)
     runs-on: ubuntu-latest
