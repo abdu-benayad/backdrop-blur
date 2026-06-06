@@ -92,6 +92,19 @@ impl GlRegion {
         self.intersect(&GlRegion::from_bottom_px([0, 0], extent, self.scale))
     }
 
+    // --- Getters (bottom-left physical pixels) ---
+
+    /// The bottom-left origin, physical pixels. Used by the grab to set `copyTexSubImage2D` /
+    /// `blitFramebuffer` read coordinates directly — GL's read origin is bottom-left, so no flip.
+    pub fn origin_bl(self) -> [u32; 2] {
+        self.origin_bl
+    }
+
+    /// Width and height, physical pixels. The grab texture is sized to this.
+    pub fn size(self) -> [u32; 2] {
+        self.size
+    }
+
     // --- The bridge (DESIGN §5: the one audited reinterpret) ---
 
     /// Reinterpret as the orientation-free [`Region`] the seam speaks. **Pure reinterpret — no

@@ -25,9 +25,13 @@
 //!
 //! On this host the context comes back **desktop GL 3.3** (`#version 140` path). The ES/WebGL2
 //! dialect is exercised by the Step-4 web tier, not here.
+//!
+//! A crate-internal module (gated `test + gl-snapshots + not(wasm)` at the `mod` decl) rather than a
+//! `tests/` helper, so the Tier-1 **unit** tests can reach the `pub(crate)` blur internals (`grab`,
+//! scratch eviction, composite) — an integration test in `tests/` could only see the public API.
 #![allow(
     dead_code,
-    reason = "shared across gated test binaries; a given test uses a subset of the harness API"
+    reason = "test harness; a given build step's tests use a subset of the helper API"
 )]
 
 use std::ffi::{CStr, c_void};
@@ -57,7 +61,7 @@ type PfnEglGetPlatformDisplayExt = unsafe extern "system" fn(
 /// A live, current, surfaceless GL context plus the EGL handles that own it. [`Deref`] yields the
 /// `glow::Context`. **The crate under test owns its own GL objects and must `destroy` them before
 /// this drops**; `Drop` here only tears down the EGL context/display.
-pub struct HeadlessGl {
+pub(crate) struct HeadlessGl {
     egl: Egl,
     display: egl::Display,
     context: egl::Context,
@@ -69,6 +73,15 @@ impl std::ops::Deref for HeadlessGl {
 
     fn deref(&self) -> &glow::Context {
         &self.gl
+    }
+}
+
+impl std::ops::DerefMut for HeadlessGl {
+    /// `BackdropBlur::record` takes `&mut Encoder` (`&mut glow::Context`); glow's methods are all
+    /// `&self`, so this mutable deref is sound — it only satisfies the seam signature, it does not
+    /// imply exclusive GL access beyond the single-threaded harness contract.
+    fn deref_mut(&mut self) -> &mut glow::Context {
+        &mut self.gl
     }
 }
 
@@ -90,7 +103,7 @@ impl Drop for HeadlessGl {
 /// Create a surfaceless headless GL context. **Panics** with a diagnostic if EGL/GL cannot be set
 /// up: these tests are compile-gated behind `gl-snapshots`, so the runner is expected to have a
 /// usable GL stack (IMPL §14 — compile-gated, not runtime-skipped).
-pub fn headless_gl() -> HeadlessGl {
+pub(crate) fn headless_gl() -> HeadlessGl {
     // SAFETY: loading the system EGL library by its standard SONAME; we trust libEGL.so.1 to be a
     // real EGL implementation.
     let lib = unsafe { libloading::Library::new("libEGL.so.1") }.expect("load libEGL.so.1");
@@ -238,9 +251,8 @@ fn create_surfaceless_context(
     None
 }
 
-/// Read a single RGBA8 pixel at `(x, y)` from the current draw framebuffer (a small readback helper
-/// shared by the Tier-1 tests). Calls `glFinish` first.
-pub fn read_rgba8(gl: &glow::Context, x: i32, y: i32) -> [u8; 4] {
+/// Read a single RGBA8 pixel at `(x, y)` from the current draw framebuffer. Calls `glFinish` first.
+pub(crate) fn read_rgba8(gl: &glow::Context, x: i32, y: i32) -> [u8; 4] {
     let mut px = [0_u8; 4];
     // SAFETY: a GL context is current; `read_pixels` writes exactly 4 bytes (1 RGBA8 pixel) into
     // `px`, whose length matches the 1x1 RGBA/UNSIGNED_BYTE request.
@@ -255,6 +267,45 @@ pub fn read_rgba8(gl: &glow::Context, x: i32, y: i32) -> [u8; 4] {
             glow::UNSIGNED_BYTE,
             glow::PixelPackData::Slice(Some(&mut px)),
         );
+    }
+    px
+}
+
+/// Read a single RGBA8 pixel at `(x, y)` from a `texture` (bottom-left origin), by attaching it to a
+/// throwaway read framebuffer. Restores no state — call only on the harness context where the test
+/// owns all bindings.
+pub(crate) fn read_texture_rgba8(
+    gl: &glow::Context,
+    texture: glow::Texture,
+    x: i32,
+    y: i32,
+) -> [u8; 4] {
+    let mut px = [0_u8; 4];
+    // SAFETY: a GL context is current; a throwaway FBO is created, `texture` attached as color 0,
+    // one pixel read, then both the FBO binding cleared and the FBO deleted. `texture` is a live
+    // handle the caller owns.
+    unsafe {
+        let fbo = gl.create_framebuffer().expect("readback fbo");
+        gl.bind_framebuffer(glow::READ_FRAMEBUFFER, Some(fbo));
+        gl.framebuffer_texture_2d(
+            glow::READ_FRAMEBUFFER,
+            glow::COLOR_ATTACHMENT0,
+            glow::TEXTURE_2D,
+            Some(texture),
+            0,
+        );
+        gl.finish();
+        gl.read_pixels(
+            x,
+            y,
+            1,
+            1,
+            glow::RGBA,
+            glow::UNSIGNED_BYTE,
+            glow::PixelPackData::Slice(Some(&mut px)),
+        );
+        gl.bind_framebuffer(glow::READ_FRAMEBUFFER, None);
+        gl.delete_framebuffer(fbo);
     }
     px
 }

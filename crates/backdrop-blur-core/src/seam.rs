@@ -17,16 +17,22 @@
 //! exactly why these traits are **not object-safe** and backends are **separate crates** (the
 //! `wgpu-types` → `wgpu-hal` model). Dispatch is static, monomorphized.
 //!
-//! # Gate verdict (IMPL §1d): the seam is kept
+//! # Gate verdict (IMPL §1d): the seam is kept — now proven by the real backend
 //!
-//! Before committing to this seam, the divergent backend was sketched against it: the
-//! `examples/glow-gate` crate maps the proven immediate-mode glow pipeline onto these traits —
-//! `BackdropBlur` for prepare/record and `GrabPass` for the grab — and **compiles**. Each type
-//! binds to a real glow type (`Device`/`Encoder` → `glow::Context`, `SourceTexture` →
-//! `glow::Texture`, `GrabPass::Framebuffer` → `glow::Framebuffer`, …); the one `()` (`Queue`)
-//! is honest because glow uploads through its context rather than a queue. v1 therefore ships
-//! **with** these traits, not a concrete one-backend pair. See that crate's module docs for
-//! the full §3 decision table.
+//! Before committing to this seam, the divergent backend was first sketched against it in a
+//! compile-only `examples/glow-gate` crate (now retired). That gate has been **superseded by the
+//! real implementation**: [`backdrop-blur-glow`] implements both `BackdropBlur` and `GrabPass`
+//! with live, `unsafe` GL and a full Tier-1 readback suite, so the seam is proven by working code
+//! rather than an `unimplemented!()` sketch. Each associated type binds to a real glow type
+//! (`Device`/`Encoder` → `glow::Context`, `SourceTexture` → the grab source, `Target` →
+//! `Option<glow::Framebuffer>` — the live draw FBO, `None` = the default framebuffer); the one `()`
+//! (`Queue`) is honest because glow uploads through its context rather than a queue, and
+//! `TargetFormat` is the **framebuffer size** (the composite viewport) — not a color format: the
+//! composite needs the full draw-target size for its full-framebuffer `glViewport`, and the encode
+//! bit is still derived at draw time from the live context's `GL_FRAMEBUFFER_SRGB` state, not from a
+//! format token. v1 therefore ships **with** these traits, not a concrete one-backend pair.
+//!
+//! [`backdrop-blur-glow`]: https://github.com/abdu-benayad/backdrop-blur
 
 use crate::{BlurError, BlurRequest, GlRegion};
 
