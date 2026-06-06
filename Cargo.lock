@@ -81,10 +81,14 @@ name = "backdrop-blur-egui"
 version = "0.1.0"
 dependencies = [
  "backdrop-blur-core",
+ "backdrop-blur-glow",
  "backdrop-blur-wgpu",
  "egui",
  "egui-wgpu",
+ "egui_glow",
  "egui_kittest",
+ "glow",
+ "log",
  "pollster",
  "wgpu",
 ]
@@ -276,6 +280,22 @@ dependencies = [
  "type-map",
  "web-time",
  "wgpu",
+]
+
+[[package]]
+name = "egui_glow"
+version = "0.34.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "62b652957fa7e1ab01e8fecbfbf4e35f6e43a53fa98af8a562b50d5403cd44b9"
+dependencies = [
+ "bytemuck",
+ "egui",
+ "glow",
+ "log",
+ "memoffset",
+ "profiling",
+ "wasm-bindgen",
+ "web-sys",
 ]
 
 [[package]]
@@ -643,6 +663,15 @@ name = "log"
 version = "0.4.32"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "953f07c43838f8e6f9758cab68bf5bed85465e7587ebe0b823f1bcd81978ad3a"
+
+[[package]]
+name = "memoffset"
+version = "0.9.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "488016bfae457b036d996092f6cb448677611ce4449e970ceaf42695203f218a"
+dependencies = [
+ "autocfg",
+]
 
 [[package]]
 name = "naga"

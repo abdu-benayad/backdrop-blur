@@ -21,6 +21,9 @@ mod surface;
 #[cfg(feature = "own-loop")]
 mod own_loop;
 
+#[cfg(feature = "grab-pass")]
+mod grab_pass;
+
 // Neutral spine — available on both paths: the glass material vocabulary (used in `Surface`) and
 // the shared `Surface` type itself.
 pub use backdrop_blur_core::{BlurStrength, CornerRadius, LinearRgba, RepaintPolicy, Tint};
@@ -35,3 +38,7 @@ pub use backdrop_blur_wgpu::{SourceColorSpace, SourceView, WgpuBlur};
 pub use egui_wgpu::ScreenDescriptor;
 #[cfg(feature = "own-loop")]
 pub use own_loop::{FrameInput, OwnLoopRenderer, is_supported_target, strongest_repaint};
+
+// Grab-pass path: the eframe-on-glow adapter. Gated so an own-loop-only build pulls no glow/egui_glow.
+#[cfg(feature = "grab-pass")]
+pub use grab_pass::GrabPassRenderer;

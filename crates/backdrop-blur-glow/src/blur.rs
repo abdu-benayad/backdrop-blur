@@ -180,31 +180,10 @@ impl BackdropBlur for GlowBlur {
         target: &Self::Target,
         prepared: &Self::Prepared,
     ) -> Result<(), BlurError> {
-        debug_assert_eq!(
-            prepared.generation, self.generation,
-            "GlPrepared invalidated by a later prepare (K1 single-surface serial contract)"
-        );
-        let gl = encoder;
-        // Save every binding the blur perturbs, run the passes + composite, then restore — the
-        // record must leave GL state exactly as found (DESIGN §11).
-        let saved = SavedGlState::capture(gl);
-        self.run_blur(gl, prepared);
-        // Composite into the captured target (the live draw FBO). The composite samples the final
-        // linear scratch: Gaussian B, or Kawase mip 0.
-        // SAFETY: `*target` is the caller's captured draw framebuffer (None = default FB 0); binding
-        // it on the current context is sound. composite::draw reads the encode bit from the global
-        // GL_FRAMEBUFFER_SRGB enable (bind-independent), so this bind ordering is for the draw target,
-        // not for the encode query.
-        unsafe { gl.bind_framebuffer(glow::DRAW_FRAMEBUFFER, *target) };
-        composite::draw(
-            gl,
-            &self.programs,
-            self.vao,
-            prepared.final_scratch(),
-            &prepared.composite,
-        );
-        saved.restore(gl);
-        Ok(())
+        // The seam hands the encoder by `&mut` (wgpu's owned CommandEncoder shape); glow draws
+        // immediate-mode on a shared context, so the real work is in `record_shared` (which an
+        // eframe adapter holding an `Arc<glow::Context>` can also reach — see [`Self::frost_region`]).
+        self.record_shared(encoder, target, prepared)
     }
 }
 
@@ -226,6 +205,70 @@ impl GrabPass for GlowBlur {
         // ([`FramebufferSize`]). So `grab_source` never fabricates a size from the region.
         let texture = self.grab(device, *framebuffer, region)?;
         Ok(GrabSource { texture })
+    }
+}
+
+// --- Shared-context entry (the eframe-on-glow adapter path) ---
+
+impl GlowBlur {
+    /// The shared-context grab-pass entry an `eframe`-on-glow adapter uses. eframe holds the GL
+    /// context in an `Arc<glow::Context>`, so it cannot produce the `&mut glow::Context` the seam's
+    /// [`record`](BackdropBlur::record) wants (a wgpu-shaped wart — glow draws immediate-mode on a
+    /// shared context, never needing exclusivity). This runs grab → prepare → record for one surface
+    /// in a paint callback, taking the context by shared `&`.
+    ///
+    /// `target` is the live draw framebuffer ([`current_draw_framebuffer`](crate::current_draw_framebuffer)):
+    /// both the grab read source (what the host just rendered) and the composite destination.
+    /// `framebuffer_size` is the **true** screen size in physical px (the composite viewport); the
+    /// adapter holds it. Returns `Ok(())` doing nothing when the region clips to nothing.
+    pub fn frost_region(
+        &mut self,
+        gl: &glow::Context,
+        target: Option<glow::Framebuffer>,
+        region: GlRegion,
+        framebuffer_size: crate::FramebufferSize,
+        request: &BlurRequest,
+    ) -> Result<(), BlurError> {
+        let source = self.grab_source(gl, &(), &target, region)?;
+        match self.prepare(gl, &(), &source, framebuffer_size, request)? {
+            Some(prepared) => self.record_shared(gl, &target, &prepared),
+            None => Ok(()),
+        }
+    }
+
+    /// The real `record` body, taking the context by shared `&` (glow's reality). The seam's
+    /// `&mut`-encoder [`record`](BackdropBlur::record) and [`frost_region`](Self::frost_region) both
+    /// delegate here. Saves every GL binding it perturbs, runs the passes + composite, then restores
+    /// (DESIGN §11).
+    fn record_shared(
+        &self,
+        gl: &glow::Context,
+        target: &Option<glow::Framebuffer>,
+        prepared: &GlPrepared,
+    ) -> Result<(), BlurError> {
+        debug_assert_eq!(
+            prepared.generation, self.generation,
+            "GlPrepared invalidated by a later prepare (K1 single-surface serial contract)"
+        );
+        // Save every binding the blur perturbs, run the passes + composite, then restore.
+        let saved = SavedGlState::capture(gl);
+        self.run_blur(gl, prepared);
+        // Composite into the captured target (the live draw FBO). The composite samples the final
+        // linear scratch: Gaussian B, or Kawase mip 0.
+        // SAFETY: `*target` is the caller's captured draw framebuffer (None = default FB 0); binding
+        // it on the current context is sound. composite::draw reads the encode bit from the global
+        // GL_FRAMEBUFFER_SRGB enable (bind-independent), so this bind ordering is for the draw target,
+        // not for the encode query.
+        unsafe { gl.bind_framebuffer(glow::DRAW_FRAMEBUFFER, *target) };
+        composite::draw(
+            gl,
+            &self.programs,
+            self.vao,
+            prepared.final_scratch(),
+            &prepared.composite,
+        );
+        saved.restore(gl);
+        Ok(())
     }
 }
 

@@ -44,6 +44,9 @@ bytemuck = { version = "1", features = ["derive"] }
 wgpu = "29"
 egui = "0.34"
 egui-wgpu = { version = "0.34", default-features = false }
+# egui_glow — the egui paint-callback integration for the grab-pass path. default-features = false
+# keeps egui-winit (and thus winit) out of the kiosk library build; it pins glow 0.17 (matches ours).
+egui_glow = { version = "0.34", default-features = false }
 # Headless AccessKit-tree + interaction testing for the egui adapter (dev-dep).
 egui_kittest = "0.34"
 # glow — the OpenGL/GLES/WebGL2 backend (the grab-pass path: eframe-on-glow + the cage kiosk).

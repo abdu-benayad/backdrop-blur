@@ -52,6 +52,19 @@ use scratch::ScratchCache;
 pub use blur::GlPrepared;
 pub use profile::{GlProfile, RenderableFloat, ShaderClass};
 
+/// Capture the host's currently-bound **draw** framebuffer — the live target a grab-pass adapter
+/// reads the backdrop from (what the host just rendered) and composites the frosted surface into.
+/// `None` is the default framebuffer (0). A safe wrapper so a `#![forbid(unsafe_code)]` adapter (the
+/// `backdrop-blur-egui` grab-pass path) can capture `GL_DRAW_FRAMEBUFFER_BINDING` without writing its
+/// own `unsafe`; pass the result to both [`GrabPass::grab_source`] and [`GlowBlur::frost_region`].
+///
+/// [`GrabPass::grab_source`]: backdrop_blur_core::GrabPass::grab_source
+pub fn current_draw_framebuffer(gl: &glow::Context) -> Option<glow::Framebuffer> {
+    // SAFETY: a read-only query of GL_DRAW_FRAMEBUFFER_BINDING on the current context (the crate's
+    // context-is-current contract). It takes no caller pointer and mutates no GL state.
+    unsafe { gl.get_parameter_framebuffer(glow::DRAW_FRAMEBUFFER_BINDING) }
+}
+
 /// The full draw-target size in physical pixels — the composite viewport (`glViewport(0,0,fb_w,
 /// fb_h)`), passed to [`BackdropBlur::prepare`] as the glow backend's `TargetFormat`. The composite
 /// needs it because the AA band outside the panel is only generated under a full-framebuffer

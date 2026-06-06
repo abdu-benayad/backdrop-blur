@@ -48,10 +48,12 @@ jobs:
         with:
           components: clippy
       - uses: Swatinem/rust-cache@v2
-      - name: build + clippy the grab-pass configuration
+      - name: build + clippy + test the grab-pass configuration
         run: |
           cargo build -p backdrop-blur-egui --no-default-features --features grab-pass
           cargo clippy -p backdrop-blur-egui --no-default-features --features grab-pass -- -D warnings
+          # The callback_region orientation tests are pure (no GL), so they run on any runner.
+          cargo test -p backdrop-blur-egui --no-default-features --features grab-pass
       - name: assert the kiosk build pulls no wgpu (feature-unification guard)
         run: |
           # `cargo tree -i wgpu` exits 0 if wgpu is reachable, non-zero ("did not match") if not.

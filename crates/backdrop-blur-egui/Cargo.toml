@@ -20,6 +20,16 @@ egui = { workspace = true }
 backdrop-blur-wgpu = { workspace = true, optional = true }
 egui-wgpu = { workspace = true, optional = true }
 wgpu = { workspace = true, optional = true }
+# Grab-pass (eframe-on-glow) backend deps — optional, activated only by the `grab-pass` feature, so
+# an own-loop build pulls neither. Neither pulls wgpu, so the kiosk build stays wgpu-free.
+backdrop-blur-glow = { workspace = true, optional = true }
+egui_glow = { workspace = true, optional = true }
+# The adapter names glow::Context in its public API (GrabPassRenderer::new/destroy); pinned to the
+# same 0.17 backdrop-blur-glow + egui_glow use, so there is one glow in the graph.
+glow = { workspace = true, optional = true }
+# Uncatchable best-effort warning when a grab-pass frost fails inside a paint callback (which cannot
+# propagate an error). Optional — only the grab-pass path uses it.
+log = { workspace = true, optional = true }
 
 [dev-dependencies]
 egui_kittest = { workspace = true }
@@ -30,10 +40,9 @@ default = ["own-loop"]
 # The own-loop path: the egui-wgpu adapter (OwnLoopRenderer) that renders to an intermediate and
 # composites the frosted surface. Pulls the wgpu stack.
 own-loop = ["dep:backdrop-blur-wgpu", "dep:egui-wgpu", "dep:wgpu"]
-# The grab-pass path: the eframe-on-glow adapter. Spine-only here; the `dep:backdrop-blur-glow`
-# entry is added in glow IMPL Step 3, once that crate exists (a `dep:` to an absent crate fails
-# manifest parse and would red the whole workspace).
-grab-pass = []
+# The grab-pass path: the eframe-on-glow adapter (GrabPassRenderer). Pulls the glow backend + the
+# egui_glow paint-callback integration — neither pulls wgpu, so the kiosk build stays wgpu-free.
+grab-pass = ["dep:backdrop-blur-glow", "dep:egui_glow", "dep:glow", "dep:log"]
 # Gates the GPU tier: a headless lavapipe test that drives real egui-wgpu rendering + blur and
 # reads the frosted result back. Hard-imports the wgpu backend, so it requires `own-loop`.
 image-snapshots = ["own-loop"]
