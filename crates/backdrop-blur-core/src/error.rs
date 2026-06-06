@@ -7,7 +7,7 @@
 //! A zero-sized/offscreen region is a **no-op**, not an error (`prepare` returns `Ok(None)`),
 //! so there is deliberately no `ZeroSizedRegion` variant.
 
-use crate::geometry::Region;
+use crate::gl_region::GlRegion;
 
 /// The boxed, typed source a backend attaches to a [`BlurError`]. Core cannot name
 /// `wgpu::Error`/`glow` errors, so it accepts any `Send + Sync` standard error.
@@ -42,8 +42,13 @@ pub enum BlurError {
     /// rewrite.)
     #[error("the grab source could not be produced from the framebuffer for region {region}")]
     GrabFailed {
-        /// The region the grab was attempted for.
-        region: Region,
+        /// The region the grab was attempted for. A [`GlRegion`] (GL bottom-left), **not** a
+        /// reinterpreted [`Region`]: this is a human-facing error, and `GlRegion`'s `Display`
+        /// marks the origin bottom-left so a debugger cannot misread it against `Region`'s
+        /// top-left convention.
+        ///
+        /// [`Region`]: crate::Region
+        region: GlRegion,
         /// The backend's underlying error.
         #[source]
         source: BackendError,
@@ -107,7 +112,7 @@ impl std::fmt::Display for BlurStage {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::geometry::{Region, Scale};
+    use crate::geometry::Scale;
 
     #[test]
     fn resource_creation_display_names_the_stage() {
@@ -142,14 +147,12 @@ mod tests {
     #[test]
     fn grab_failed_display_includes_the_region() {
         let err = BlurError::GrabFailed {
-            region: Region {
-                origin: [0, 0],
-                size: [10, 10],
-                scale: Scale::default(),
-            },
+            region: GlRegion::from_bottom_px([0, 0], [10, 10], Scale::default()),
             source: "no framebuffer".into(),
         };
+        // The message embeds the bottom-left-marked region, so a debugger reads the orientation.
         assert!(err.to_string().contains("region"));
+        assert!(err.to_string().contains("origin-bl"));
     }
 
     #[test]

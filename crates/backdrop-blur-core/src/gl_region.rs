@@ -95,16 +95,35 @@ impl GlRegion {
     // --- The bridge (DESIGN §5: the one audited reinterpret) ---
 
     /// Reinterpret as the orientation-free [`Region`] the seam speaks. **Pure reinterpret — no
-    /// arithmetic, no flip:** the bottom-left numbers pass straight through, and every consumer
-    /// on the glow path (`grab_source`, the SDF, `backdrop_uv_remap`, the composite uniforms)
-    /// treats the resulting `Region` as bottom-left consistently, so no coordinate is ever
-    /// double-interpreted. This is the single line a review checks for a hidden `height − y`.
+    /// arithmetic, no flip:** the bottom-left numbers pass straight through, and every *compute*
+    /// consumer on the glow path (`grab_source`, the SDF, `backdrop_uv_remap`, the composite
+    /// uniforms) treats the resulting `Region` as bottom-left consistently, so no coordinate is
+    /// ever double-interpreted. This is the single line a review checks for a hidden `height − y`.
+    ///
+    /// The one consumer that must **not** receive an `into_region()`'d value is a human-facing
+    /// error: [`Region`]'s `Display` is documented top-left, so a bottom-left number printed
+    /// through it would mislead a debugger. That is why [`BlurError::GrabFailed`] carries a
+    /// `GlRegion` directly (which prints with an explicit bottom-left marker), not a reinterpreted
+    /// `Region`.
+    ///
+    /// [`BlurError::GrabFailed`]: crate::BlurError::GrabFailed
     pub fn into_region(self) -> Region {
         Region {
             origin: self.origin_bl,
             size: self.size,
             scale: self.scale,
         }
+    }
+}
+
+impl std::fmt::Display for GlRegion {
+    /// Prints with an explicit `bottom-left` marker so an error message can never be mistaken for
+    /// the top-left [`Region`] convention.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let [x, y] = self.origin_bl;
+        let [w, h] = self.size;
+        let scale = self.scale.factor();
+        write!(f, "origin-bl ({x}, {y}), size {w}×{h}, scale {scale}")
     }
 }
 
@@ -196,5 +215,14 @@ mod tests {
         // origin + size would overflow u32; saturating arithmetic clips cleanly.
         let r = gl([u32::MAX - 1, 0], [10, 10], 1.0);
         assert_eq!(r.clip_to([100, 100]), None);
+    }
+
+    #[test]
+    fn display_marks_the_origin_bottom_left() {
+        // The "-bl" marker is what keeps an error message from being read as top-left Region.
+        assert_eq!(
+            gl([4, 8], [100, 60], 2.0).to_string(),
+            "origin-bl (4, 8), size 100×60, scale 2"
+        );
     }
 }

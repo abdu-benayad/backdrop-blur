@@ -34,6 +34,34 @@ jobs:
       - name: build
         run: cargo build --workspace
 
+  grab-pass:
+    # The kiosk (grab-pass) feature config is NOT covered by default-tier (which is own-loop
+    # default). Without this job a neutral-spine regression that breaks the grab-pass build, or a
+    # feature-unification leak that re-adds wgpu, would land green on `main` (no PR diff to catch
+    # it). Pulled forward from IMPL Step 3c so the kiosk surface is guarded throughout. GPU-free
+    # and winit-free, so it needs no extra system deps.
+    name: grab-pass (kiosk) build — wgpu-free
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.95.0
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: build + clippy the grab-pass configuration
+        run: |
+          cargo build -p backdrop-blur-egui --no-default-features --features grab-pass
+          cargo clippy -p backdrop-blur-egui --no-default-features --features grab-pass -- -D warnings
+      - name: assert the kiosk build pulls no wgpu (feature-unification guard)
+        run: |
+          # `cargo tree -i wgpu` exits 0 if wgpu is reachable, non-zero ("did not match") if not.
+          if cargo tree -p backdrop-blur-egui --no-default-features --features grab-pass -e normal -i wgpu 2>/dev/null; then
+            echo "::error::wgpu is reachable from the grab-pass (kiosk) build — feature-unification leak"
+            exit 1
+          else
+            echo "OK: wgpu is absent from the grab-pass dependency tree"
+          fi
+
   msrv:
     name: MSRV 1.92 builds
     runs-on: ubuntu-latest
