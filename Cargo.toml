@@ -14,7 +14,7 @@ members = ["crates/*"]
 # GPU tests are `gl-snapshots`-gated, so `cargo test --workspace` stays GPU-free (the unsafe
 # crate gains clippy + the undocumented-unsafe-blocks lint as a bonus; IMPL §1.2). Each
 # excluded package builds in its own job via `--manifest-path`.
-exclude = ["examples/egui-wgpu-panel", "examples/frost-gallery"]
+exclude = ["examples/egui-wgpu-panel", "examples/frost-gallery", "examples/eframe-glow-panel"]
 
 [workspace.package]
 edition = "2024"
