@@ -28,7 +28,7 @@
 //! **with** these traits, not a concrete one-backend pair. See that crate's module docs for
 //! the full §3 decision table.
 
-use crate::{BlurError, BlurRequest, Region};
+use crate::{BlurError, BlurRequest, GlRegion};
 
 /// Implemented once per GPU backend (`WgpuBlur` in v1; `GlowBlur` later). The implementor holds
 /// the backend's cached resources — per-`(size, levels)` ping-pong chains and the pipelines —
@@ -115,13 +115,19 @@ pub trait GrabPass: BackdropBlur {
 
     /// Produce a sampleable [`SourceTexture`](BackdropBlur::SourceTexture) by blitting (and
     /// MSAA-resolving) the `region` out of the live `framebuffer` — backend-specific GL the host
-    /// cannot do generically. Any read-origin flip (GL's bottom-left vs top-left sampling) is
-    /// handled inside here, so no extra method is forced onto the seam.
+    /// cannot do generically.
+    ///
+    /// `region` is a [`GlRegion`] — **already in GL bottom-left coordinates** — so `grab_source`
+    /// performs **no** read-origin flip. This is a deliberate divergence from the v1 seam, where
+    /// this doc placed the bottom-left↔top-left flip *inside* `grab_source`: the adapter now
+    /// derives the region from egui's bottom-origin `from_bottom_px` and builds the whole
+    /// [`BlurRequest`] bottom-left (DESIGN §5), so a flip here would be a *double* flip. The
+    /// y-orientation is carried by the type, not by an internal arithmetic step (see [`GlRegion`]).
     fn grab_source(
         &mut self,
         device: &Self::Device,
         queue: &Self::Queue,
         framebuffer: &Self::Framebuffer,
-        region: Region,
+        region: GlRegion,
     ) -> Result<Self::SourceTexture, BlurError>;
 }

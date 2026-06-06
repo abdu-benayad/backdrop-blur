@@ -48,6 +48,16 @@ pub enum BlurError {
         #[source]
         source: BackendError,
     },
+
+    /// The live GL context lacks a capability the grab-pass backend requires (too-old GL/GLES,
+    /// a missing float-render extension). Raised at backend construction, before any frame.
+    #[error("the GL context does not support the blur backend: {detail}")]
+    UnsupportedContext {
+        /// What was required vs. found, captured as text because core cannot name a `glow`
+        /// version/extension type (the same documented `String` exception as
+        /// [`UnsupportedTarget`](Self::UnsupportedTarget), DESIGN §4.5).
+        detail: String,
+    },
 }
 
 /// Which GPU resource a [`BlurError::ResourceCreation`] refers to — named so a failure points
@@ -66,6 +76,14 @@ pub enum BlurStage {
     UniformBuffer,
     /// A bind group wiring textures/uniforms to a pipeline.
     BindGroup,
+    /// A shader stage failed to compile (the immediate-mode glow path: `glCompileShader`).
+    ShaderCompile,
+    /// A linked GL program failed to link its compiled stages (`glLinkProgram`).
+    ProgramLink,
+    /// A GL framebuffer object could not be created or was incomplete (grab / resolve / scratch).
+    Framebuffer,
+    /// A GL vertex array object (the shared fullscreen-triangle VAO) could not be created.
+    VertexArray,
 }
 
 impl std::fmt::Display for BlurStage {
@@ -77,6 +95,10 @@ impl std::fmt::Display for BlurStage {
             Self::CompositePipeline => "composite pipeline",
             Self::UniformBuffer => "uniform buffer",
             Self::BindGroup => "bind group",
+            Self::ShaderCompile => "shader",
+            Self::ProgramLink => "shader program",
+            Self::Framebuffer => "framebuffer",
+            Self::VertexArray => "vertex array",
         };
         f.write_str(label)
     }
@@ -139,8 +161,23 @@ mod tests {
             BlurStage::CompositePipeline,
             BlurStage::UniformBuffer,
             BlurStage::BindGroup,
+            BlurStage::ShaderCompile,
+            BlurStage::ProgramLink,
+            BlurStage::Framebuffer,
+            BlurStage::VertexArray,
         ] {
             assert!(!stage.to_string().is_empty());
         }
+    }
+
+    #[test]
+    fn unsupported_context_display_includes_the_detail() {
+        let err = BlurError::UnsupportedContext {
+            detail: "requires GL 3.3 / GLES 3.0, found GL 2.1".to_owned(),
+        };
+        assert!(
+            err.to_string()
+                .contains("requires GL 3.3 / GLES 3.0, found GL 2.1")
+        );
     }
 }

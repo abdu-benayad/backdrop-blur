@@ -21,14 +21,22 @@
 //! [`backdrop-blur`]: https://github.com/abdu-benayad/backdrop-blur
 #![forbid(unsafe_code)]
 
+mod algorithm;
 mod error;
 mod geometry;
+mod gl_region;
 mod liveness;
 mod material;
 mod seam;
 
+pub use algorithm::{
+    GaussianKernel, KAWASE_THRESHOLD_PX, MAX_GAUSSIAN_RADIUS, MAX_KAWASE_LEVELS, PingPongKey,
+    TargetEncoding, backdrop_uv_remap, kawase_halfpixel, kawase_level_size, resolve_gaussian,
+    resolve_kawase_levels, use_dual_kawase,
+};
 pub use error::{BackendError, BlurError, BlurStage};
 pub use geometry::{BlurRequest, Region, ResolvedMask, Scale};
+pub use gl_region::GlRegion;
 pub use liveness::RepaintPolicy;
 pub use material::{BlurStrength, CornerRadius, LinearRgba, Tint};
 pub use seam::{BackdropBlur, GrabPass};

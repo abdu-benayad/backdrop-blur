@@ -36,8 +36,8 @@ mod cache;
 mod uniforms;
 
 use cache::{
-    PingPongKey, SCRATCH_FORMAT, backdrop_uv_remap, composite_encode_srgb, kawase_halfpixel,
-    kawase_level_size, resolve_gaussian, resolve_kawase_levels, use_dual_kawase,
+    PingPongKey, SCRATCH_FORMAT, TargetEncoding, backdrop_uv_remap, composite_encode_srgb,
+    kawase_halfpixel, kawase_level_size, resolve_gaussian, resolve_kawase_levels, use_dual_kawase,
 };
 use uniforms::{CompositeParams, GaussianParams, KawaseParams};
 
@@ -328,10 +328,12 @@ impl BackdropBlur for WgpuBlur {
             return Ok(None); // zero-area or fully-offscreen region → no-op
         };
 
-        let encode_srgb =
+        let encode_srgb = matches!(
             composite_encode_srgb(target_format).ok_or_else(|| BlurError::UnsupportedTarget {
                 format: format!("{target_format:?}"),
-            })?;
+            })?,
+            TargetEncoding::Srgb
+        );
         let decode_srgb = matches!(source.color_space, SourceColorSpace::GammaSrgb);
         self.ensure_composite_pipeline(device, target_format);
 

@@ -24,7 +24,7 @@
 //! | `TargetFormat`  | `BackdropBlur` | `u32` — a GLES internal-format enum    | yes |
 //! | `Prepared`      | `BackdropBlur` | [`GlPrepared`] — resolved payload, OWNED| yes (resolves, does **not** upload — K2) |
 //! | `Framebuffer`   | `GrabPass`     | `glow::Framebuffer` — the grab source   | yes (grab-pass only — wgpu never implements `GrabPass`) |
-//! | `grab_source`   | `GrabPass`     | `copy_tex_image_2d`; bottom-left flip *inside* it | the K5 socket — no extra method |
+//! | `grab_source`   | `GrabPass`     | `copy_tex_image_2d` of a `GlRegion` (already bottom-left) — no flip inside | the K5 socket — no extra method |
 //!
 //! ## Verdict: **the seam fits — keep it.**
 //!
@@ -36,7 +36,9 @@
 //! the seam (not a concrete one-backend pair). This file compiling **is** that proof.
 #![forbid(unsafe_code)] // The sketch has no bodies; the real GL `unsafe` lives in the deferred glow crate.
 
-use backdrop_blur_core::{BackdropBlur, BlurError, BlurRequest, GrabPass, Region, ResolvedMask, Tint};
+use backdrop_blur_core::{
+    BackdropBlur, BlurError, BlurRequest, GlRegion, GrabPass, ResolvedMask, Tint,
+};
 
 /// The cached, cross-frame glow resources (programs + per-size ping-pong scratch), mirroring
 /// the spike's `GlBlur`. Fields are illustrative — bodies are `unimplemented!()`.
@@ -77,8 +79,8 @@ pub struct GlPrepared {
     mask: ResolvedMask,
     /// The glass film.
     tint: Tint,
-    /// Where to composite, in the target framebuffer.
-    target_rect: Region,
+    /// Where to composite, in the target framebuffer (GL bottom-left coords).
+    target_rect: GlRegion,
     /// Resolved per-pass sampling offsets (the algorithm-specific part the backend owns).
     pass_offsets: Vec<f32>,
     /// Which scratch textures this surface blurs through (resource keys, not borrows).
@@ -128,10 +130,12 @@ impl GrabPass for GlowBlur {
         _device: &Self::Device,
         _queue: &Self::Queue,
         _framebuffer: &Self::Framebuffer,
-        _region: Region,
+        _region: GlRegion,
     ) -> Result<Self::SourceTexture, BlurError> {
-        // Spike: `copy_tex_image_2d` the region out of `framebuffer` into a grab texture; the
-        // bottom-left→top-left origin flip lives HERE (K5), so no extra trait method is needed.
+        // Spike: `copy_tex_image_2d` the region out of `framebuffer` into a grab texture. The
+        // `region` is already a bottom-left `GlRegion` (the adapter builds GL-origin coords from
+        // egui's `from_bottom_px`), so there is NO flip here — the y-orientation rides the type,
+        // not an arithmetic step (DESIGN §5, the divergence from the v1 seam).
         unimplemented!("gate sketch — type mapping only; real GL lives in backdrop-blur-glow")
     }
 }

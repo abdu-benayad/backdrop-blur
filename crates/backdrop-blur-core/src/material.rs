@@ -7,11 +7,14 @@ use crate::geometry::Scale;
 /// Blur radius in **logical points**.
 ///
 /// Core resolves this to a physical-pixel radius — the one algorithm-*agnostic* step. The
-/// mapping from that radius to algorithm-specific parameters (a separable-Gaussian sigma, or
-/// dual-Kawase levels + per-pass sampling offsets) lives in the **backend**, not here: there
-/// is no closed-form map, and the parameters differ per algorithm (DESIGN §4.2). Keeping only
-/// the agnostic resolution in core is why core has no notion of "levels" — that is the wgpu
-/// crate's, pinned by its own offset test (IMPL §2b′).
+/// **GPU application** of the resulting parameters (allocating the pyramid textures, binding the
+/// per-pass offset uniforms, the draws) lives in the backend; the GPU-free *policy* that
+/// produces them — the Gaussian sigma/taps and the dual-Kawase level/half-pixel math — lives in
+/// [`crate::algorithm`] (DESIGN §4.2, §15). **Reversal noted (glow IMPL §0c):** an earlier
+/// version of this paragraph said core "has no notion of levels — that is the wgpu crate's".
+/// That held while wgpu was the only backend; the glow backend needs the *same* level policy, so
+/// it was hoisted to core to keep the two backends from drifting. Core now owns the level math;
+/// only the GPU resources it keys stay backend-specific.
 ///
 /// The resolution is exposed as [`BlurRequest::physical_blur_radius`], **not** a free
 /// `strength × scale` call: a [`BlurRequest`] carries two independent scales (source vs
