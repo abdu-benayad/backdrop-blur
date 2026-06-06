@@ -10,8 +10,9 @@ vibrancy, Vello does *shape* blur; neither is in-app, arbitrary-surface backdrop
 crate fills that gap once, so each toolkit needs only a thin adapter instead of re-deriving
 the render-to-texture + multi-tap convolution every time.
 
-> **Status: pre-release, v1 in progress.** The API is not yet stable and nothing is published
-> to crates.io. See [`docs/IMPL.md`](docs/IMPL.md) for the build sequence.
+> **Status: pre-release.** The safe wgpu/own-loop slice and the glow grab-pass backend are built
+> and tested; the API is not yet stable and nothing is published to crates.io. See
+> [`docs/IMPL.md`](docs/IMPL.md) and [`docs/GLOW_IMPL.md`](docs/GLOW_IMPL.md) for the build sequence.
 
 ## What it is (and is not)
 
@@ -21,21 +22,30 @@ the render-to-texture + multi-tap convolution every time.
 - **Is not:** a general effects/filter graph, OS/compositor vibrancy, or a renderer. It
   composites *into* a target the host owns; it never owns the frame.
 
-## v1 scope, stated plainly
+## Scope, stated plainly
 
-v1 is the disciplined minimal slice on the safe backend:
+v1 was the disciplined minimal slice on the safe wgpu/own-loop backend; the **glow grab-pass
+backend has since landed** (originally deferred past v1). The current state is both paths over
+one shared seam:
 
 ```
-backdrop-blur-core  +  backdrop-blur-wgpu  +  backdrop-blur-egui (own-loop)  +  examples/egui-wgpu-panel
+backdrop-blur-core
+  ├─ backdrop-blur-wgpu  → backdrop-blur-egui (own-loop)   → examples/{egui-wgpu-panel, frost-gallery}
+  └─ backdrop-blur-glow  → backdrop-blur-egui (grab-pass)  → examples/eframe-glow-panel
 ```
 
-- **100% safe Rust.** The only `unsafe` crate (`backdrop-blur-glow`, for the grab-pass path)
-  is **deferred**.
-- The egui path is the **own-loop** path — apps driving `egui-winit` + `egui-wgpu` directly,
-  using `egui-wgpu::Renderer`'s caller-chosen attachment (no fork). Mainstream `eframe`-on-glow
-  reach arrives later with the deferred glow backend.
-- v1 supports a **single frosted surface over a once-rendered backdrop**, non-overlapping.
-  Ordered, stacked glass is named future work.
+- **`unsafe` is quarantined to one crate.** Every crate is `#![forbid(unsafe_code)]` *except*
+  `backdrop-blur-glow`, where raw GL is inherently `unsafe`. There it is held to
+  `#![deny(unsafe_op_in_unsafe_fn)]` + `#![deny(clippy::undocumented_unsafe_blocks)]` — every
+  block carries a `// SAFETY:` justification or the build fails — and a wgpu/own-loop consumer
+  never compiles it (Cargo's additive features). The glow GL is verified by headless
+  EGL-surfaceless readback tests on a real context.
+- **Two egui paths over one `Surface`.** The **own-loop** path drives `egui-winit` + `egui-wgpu`
+  directly (caller-chosen attachment, no fork). The **grab-pass** path is `eframe`-on-glow and the
+  `cage` Wayland kiosk: grab a region of the live framebuffer, blur it, composite the frosted
+  surface back, all in an egui paint callback.
+- A **single frosted surface over a once-rendered backdrop**, non-overlapping. Ordered, stacked
+  glass is named future work.
 
 ## Workspace layout
 
@@ -43,8 +53,8 @@ backdrop-blur-core  +  backdrop-blur-wgpu  +  backdrop-blur-egui (own-loop)  +  
 |---|---|---|
 | `backdrop-blur-core` | seam trait + material/geometry/error/liveness vocabulary; no GPU dep; `#![forbid(unsafe_code)]` | v1 |
 | `backdrop-blur-wgpu` | wgpu backend (WGSL), safe | v1 |
-| `backdrop-blur-egui` | egui adapter — own-loop (→ wgpu) | v1 |
-| `backdrop-blur-glow` | glow backend (GLES) — the only `unsafe` crate | deferred |
+| `backdrop-blur-egui` | egui adapter — own-loop (→ wgpu) **and** grab-pass (→ glow) | built |
+| `backdrop-blur-glow` | glow backend (OpenGL 3.3 / GLES 3.0 / WebGL2) — the one `unsafe` crate, quarantined | built |
 | `backdrop-blur` | optional thin facade (re-exports) | deferred |
 
 Backends and adapters are separate crates on purpose: distinct public resource types
@@ -63,8 +73,13 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo test  --workspace
 cargo build --workspace
 
-# Gated GPU tier — lavapipe software Vulkan only (added with backdrop-blur-wgpu):
-cargo test -p backdrop-blur-wgpu --features image-snapshots -- --test-threads=1
+# Kiosk (grab-pass) config — must build and pull no wgpu:
+cargo build -p backdrop-blur-egui --no-default-features --features grab-pass
+cargo build -p backdrop-blur-glow --target wasm32-unknown-unknown   # WebGL2 readiness
+
+# Gated GPU tiers (a real renderer; never in the default tier):
+cargo test -p backdrop-blur-wgpu --features image-snapshots -- --test-threads=1  # lavapipe Vulkan
+cargo test -p backdrop-blur-glow --features gl-snapshots    -- --test-threads=1  # EGL-surfaceless GL
 ```
 
 ## Documentation
