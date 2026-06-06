@@ -26,7 +26,9 @@ mod grab_pass;
 
 // Neutral spine — available on both paths: the glass material vocabulary (used in `Surface`) and
 // the shared `Surface` type itself.
-pub use backdrop_blur_core::{BlurStrength, CornerRadius, LinearRgba, RepaintPolicy, Tint};
+pub use backdrop_blur_core::{
+    BlurStrength, CornerRadius, LinearRgba, Opacity, RepaintPolicy, Tint,
+};
 pub use surface::Surface;
 
 // Own-loop path re-exports: the wgpu backend (`render_frame` drives it), the egui-wgpu screen

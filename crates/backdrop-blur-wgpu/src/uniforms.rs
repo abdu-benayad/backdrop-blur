@@ -57,10 +57,15 @@ pub(crate) struct CompositeParams {
     pub backdrop_uv_scale: [f32; 2],
     pub corner_radius_px: f32,
     pub encode_srgb: u32,
-    pub _pad: [f32; 2],
+    pub opacity: f32,
+    pub _pad: f32,
 }
 
 impl CompositeParams {
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "flat UBO mirror; field-per-arg is the point"
+    )]
     pub(crate) fn new(
         rect_origin_px: [f32; 2],
         rect_size_px: [f32; 2],
@@ -69,6 +74,7 @@ impl CompositeParams {
         backdrop_uv_scale: [f32; 2],
         corner_radius_px: f32,
         encode_srgb: bool,
+        opacity: f32,
     ) -> Self {
         Self {
             rect_origin_px,
@@ -78,7 +84,8 @@ impl CompositeParams {
             backdrop_uv_scale,
             corner_radius_px,
             encode_srgb: u32::from(encode_srgb),
-            _pad: [0.0; 2],
+            opacity,
+            _pad: 0.0,
         }
     }
 }
@@ -129,6 +136,7 @@ mod tests {
         assert_eq!(offset_of!(CompositeParams, backdrop_uv_scale), 40);
         assert_eq!(offset_of!(CompositeParams, corner_radius_px), 48);
         assert_eq!(offset_of!(CompositeParams, encode_srgb), 52);
+        assert_eq!(offset_of!(CompositeParams, opacity), 56);
     }
 
     #[test]

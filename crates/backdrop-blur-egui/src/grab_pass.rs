@@ -106,6 +106,7 @@ impl GrabPassRenderer {
                 strength: surface.strength,
                 tint: surface.tint,
                 corner_radius: surface.corner_radius,
+                opacity: surface.opacity,
             };
             let target = current_draw_framebuffer(gl);
             if let Err(e) = blur.frost_region(gl, target, region, framebuffer_size, &request) {

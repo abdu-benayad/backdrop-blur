@@ -9,7 +9,7 @@
 use super::*;
 use crate::GlowBlur;
 use crate::gl_harness::{headless_gl, read_texture_rgba8};
-use backdrop_blur_core::{BlurStrength, CornerRadius, LinearRgba, Region, Scale, Tint};
+use backdrop_blur_core::{BlurStrength, CornerRadius, LinearRgba, Opacity, Region, Scale, Tint};
 use glow::HasContext;
 
 const DIM: u32 = 128;
@@ -172,6 +172,7 @@ fn frost(
     corner_radius: f32,
     tint: Tint,
     seed: [f32; 4],
+    opacity: f32,
 ) -> Target {
     let (t_fbo, t_tex) = make_fbo(gl);
     clear_fbo(gl, t_fbo, seed);
@@ -187,6 +188,7 @@ fn frost(
         strength: BlurStrength::new(strength),
         tint,
         corner_radius: CornerRadius::new(corner_radius),
+        opacity: Opacity::new(opacity),
     };
     // The composite viewport is the true screen size the egui adapter holds, passed as the
     // backend's TargetFormat (a missing size would be a compile error, not a silent AA regression).
@@ -227,6 +229,7 @@ fn gaussian_softens_a_hard_edge() {
         0.0,
         no_tint(),
         [0.5, 0.5, 0.5, 1.0],
+        1.0,
     );
 
     // On the seam (x=64): a midtone, NOT a hard black/white step.
@@ -270,6 +273,7 @@ fn dual_kawase_preserves_a_flat_backdrop() {
         0.0,
         no_tint(),
         [0.0, 0.0, 0.0, 1.0],
+        1.0,
     );
 
     // Panel center, far from edges: the composite re-encodes linear→sRGB, so the readback must
@@ -303,6 +307,7 @@ fn dual_kawase_reaches_across_a_large_radius_edge() {
         0.0,
         no_tint(),
         [0.0, 0.0, 0.0, 1.0],
+        1.0,
     );
 
     let px = read_texture_rgba8(&gl, target.tex, 64, 64);
@@ -384,6 +389,7 @@ fn composite_has_no_edge_halo_both_directions() {
         0.0,
         bright,
         [0.0, 0.0, 0.0, 1.0],
+        1.0,
     );
     assert_no_edge_halo(&gl, t1.tex, 64, 16, 80);
 
@@ -399,6 +405,7 @@ fn composite_has_no_edge_halo_both_directions() {
         0.0,
         dark,
         [1.0, 1.0, 1.0, 1.0],
+        1.0,
     );
     assert_no_edge_halo(&gl, t2.tex, 64, 16, 80);
 
@@ -435,6 +442,7 @@ fn composite_edge_is_analytic_aa_not_a_hard_scissor_cut() {
         24.0,
         bright,
         [0.0, 0.0, 0.0, 1.0],
+        1.0,
     );
 
     // Panel interior, away from every edge: fully covered → bright.
@@ -507,6 +515,7 @@ fn panel_inset_keeps_vertical_orientation_and_registered_edge() {
         0.0,
         tint,
         [0.0, 0.0, 0.0, 1.0],
+        1.0,
     );
 
     // (a) Vertical orientation: well inside the panel, low y is red, high y is blue. Sample away
@@ -562,7 +571,7 @@ fn composite_leaves_content_outside_the_panel_untouched() {
     let scene = flat_backdrop(&gl, [1.0, 0.0, 0.0, 1.0]); // red backdrop
     let p = panel([48, 48], [32, 32]);
     let seed = [0.0, 1.0, 0.0, 1.0]; // green seed
-    let target = frost(&mut gl, &mut blur, &scene, p, 6.0, 0.0, no_tint(), seed);
+    let target = frost(&mut gl, &mut blur, &scene, p, 6.0, 0.0, no_tint(), seed, 1.0);
 
     // Corner of the framebuffer, far from the panel: still the green seed.
     let corner = read_texture_rgba8(&gl, target.tex, 8, 8);
@@ -602,6 +611,7 @@ fn end_to_end_frosts_a_panel_over_a_known_backdrop() {
         16.0,
         tint,
         [0.0, 0.0, 0.0, 1.0],
+        1.0,
     );
 
     // Panel center sits on the seam → a blurred red↔blue mix (both channels substantial).
@@ -690,6 +700,7 @@ fn record_leaves_gl_state_unchanged() {
         strength: BlurStrength::new(8.0),
         tint: Tint::new(LinearRgba::new(0.0, 0.0, 0.0, 0.2)),
         corner_radius: CornerRadius::new(8.0),
+        opacity: Opacity::default(),
     };
     let prepared = blur
         .prepare(&gl, &(), &source, FramebufferSize([DIM, DIM]), &request)
@@ -817,6 +828,7 @@ fn prepare_is_a_no_op_for_a_fully_offscreen_region() {
         strength: BlurStrength::new(8.0),
         tint: no_tint(),
         corner_radius: CornerRadius::new(0.0),
+        opacity: Opacity::default(),
     };
     let prepared = blur
         .prepare(&gl, &(), &source, FramebufferSize([DIM, DIM]), &request)
@@ -827,4 +839,62 @@ fn prepare_is_a_no_op_for_a_fully_offscreen_region() {
     );
     blur.destroy(&gl);
     free_fbo(&gl, scene.fbo, scene.tex);
+}
+
+/// The surface-global fade (`Opacity`) is a real linear blend toward the untouched destination:
+/// `out(opacity) == lerp(D, F, opacity)` at a panel-interior pixel (coverage = 1, so the per-pixel
+/// coverage is out of it and the master opacity is the only variable). `opacity = 0` leaves the
+/// seeded destination untouched; `0.5` is the byte-space midpoint of D and the fully-present F. This
+/// is the premultiplied-path counterpart of the wgpu oracle, proving the glow `rgb*a, a` fold is the
+/// same linear fade.
+#[test]
+fn opacity_fades_the_surface_linearly_toward_the_destination() {
+    let mut gl = headless_gl();
+    let mut blur = GlowBlur::new(&gl).expect("new");
+    // Destination seed near-black; backdrop bright gray — so the frosted interior F differs from D
+    // and the fade D -> F is non-trivial. No tint, so F is the pure blurred backdrop.
+    let scene = flat_backdrop(&gl, [0.7, 0.7, 0.7, 1.0]);
+    let p = panel([24, 24], [80, 80]);
+    let seed = [0.05, 0.05, 0.05, 1.0];
+
+    let t0 = frost(&mut gl, &mut blur, &scene, p, 12.0, 0.0, no_tint(), seed, 0.0);
+    let thalf = frost(&mut gl, &mut blur, &scene, p, 12.0, 0.0, no_tint(), seed, 0.5);
+    let t1 = frost(&mut gl, &mut blur, &scene, p, 12.0, 0.0, no_tint(), seed, 1.0);
+
+    // Panel interior (panel = [24,24]+80x80), coverage = 1.
+    let (cx, cy) = (64, 64);
+    let d = read_texture_rgba8(&gl, t0.tex, cx, cy); // opacity 0 == the destination D
+    let h = read_texture_rgba8(&gl, thalf.tex, cx, cy);
+    let f = read_texture_rgba8(&gl, t1.tex, cx, cy); // opacity 1 == fully-present F
+
+    // opacity = 0 leaves the destination untouched (near-black seed).
+    for ch in 0..3 {
+        assert!(
+            d[ch] <= 16,
+            "opacity=0 leaves the destination untouched (channel {ch} = {})",
+            d[ch]
+        );
+    }
+    // opacity = 0.5 is the linear midpoint between D and F (byte space, where the blend happens).
+    for ch in 0..3 {
+        let expected = (i32::from(d[ch]) + i32::from(f[ch]) + 1) / 2;
+        let got = i32::from(h[ch]);
+        assert!(
+            (got - expected).abs() <= 3,
+            "opacity=0.5 == lerp(D,F,0.5) at the interior (channel {ch}: D={} F={} expected≈{expected} got={got})",
+            d[ch],
+            f[ch]
+        );
+    }
+    // The fade must actually move the pixel, or the oracle is vacuous.
+    assert!(
+        (0..3).any(|ch| f[ch] != d[ch]),
+        "the frost must change the interior pixel, else the oracle proves nothing"
+    );
+
+    blur.destroy(&gl);
+    free_fbo(&gl, scene.fbo, scene.tex);
+    free_fbo(&gl, t0.fbo, t0.tex);
+    free_fbo(&gl, thalf.fbo, thalf.tex);
+    free_fbo(&gl, t1.fbo, t1.tex);
 }

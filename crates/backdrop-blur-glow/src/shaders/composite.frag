@@ -20,6 +20,7 @@ uniform vec2 u_backdrop_uv_offset;    // map target-rect uv [0,1] onto the clipp
 uniform vec2 u_backdrop_uv_scale;
 uniform float u_corner_radius_px;     // clamped, framebuffer px
 uniform int u_encode_srgb;            // 1 => manually linear->sRGB encode the output
+uniform float u_opacity;              // surface-global fade in [0,1]; scales the premultiplied output
 
 out vec4 frag;
 
@@ -57,6 +58,10 @@ void main() {
     if (u_encode_srgb == 1) {
         rgb = linear_to_srgb(rgb);
     }
-    // Premultiplied output: encode first, THEN fold coverage into both rgb and alpha.
-    frag = vec4(rgb * coverage, coverage);
+    // Premultiplied output: encode first, THEN fold coverage (and the surface-global opacity fade)
+    // into both rgb and alpha. opacity scales the effective coverage, so the surface dissolves to
+    // the untouched destination at opacity 0 — and the §2d no-halo property holds (the edge color is
+    // unchanged; only the premultiplied weight scales, consistently in rgb and alpha).
+    float a = coverage * u_opacity;
+    frag = vec4(rgb * a, a);
 }

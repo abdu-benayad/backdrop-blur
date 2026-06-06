@@ -10,8 +10,9 @@
 //!    full-framebuffer window coords that match the bottom-left `rect_origin` uniform.
 //! 2. **Scissor disabled** for the whole draw, so the AA band is not clipped to egui's per-
 //!    primitive scissor box.
-//! 3. **Premultiplied blend.** `composite.frag` emits premultiplied alpha (`rgb·coverage`,
-//!    `a = coverage`), paired here with `glBlendFunc(ONE, ONE_MINUS_SRC_ALPHA)`.
+//! 3. **Premultiplied blend.** `composite.frag` emits premultiplied alpha (`rgb·a`, `a`, where
+//!    `a = coverage · opacity` — the rounded-rect coverage scaled by the surface-global fade),
+//!    paired here with `glBlendFunc(ONE, ONE_MINUS_SRC_ALPHA)`.
 //!
 //! The encode bit is **not** a `wgpu::TextureFormat` allowlist (glow never sees the `u32` internal
 //! format): on native it is `!glIsEnabled(GL_FRAMEBUFFER_SRGB)`. `GL_FRAMEBUFFER_SRGB` is **global**
@@ -40,10 +41,17 @@ pub(crate) struct CompositeParams {
     /// The full framebuffer size in px — the composite viewport (`glViewport(0,0,fb_w,fb_h)`), so
     /// `gl_FragCoord` spans the whole attachment and the outer AA band is generated.
     pub(crate) framebuffer_size: [u32; 2],
+    /// Surface-global fade `[0, 1]` — scales the premultiplied output (both rgb and alpha), so the
+    /// surface dissolves to the untouched destination as it goes to 0.
+    pub(crate) opacity: f32,
 }
 
 impl CompositeParams {
     /// Assemble from the resolved mask, tint, and bottom-left target rect/backdrop remap.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "flat composite inputs; field-per-arg is the point"
+    )]
     pub(crate) fn new(
         rect_origin_px: [f32; 2],
         rect_size_px: [f32; 2],
@@ -52,6 +60,7 @@ impl CompositeParams {
         backdrop_uv_scale: [f32; 2],
         mask: ResolvedMask,
         framebuffer_size: [u32; 2],
+        opacity: f32,
     ) -> Self {
         Self {
             rect_origin_px,
@@ -61,6 +70,7 @@ impl CompositeParams {
             backdrop_uv_scale,
             corner_radius_px: mask.corner_radius_px,
             framebuffer_size,
+            opacity,
         }
     }
 }
@@ -135,6 +145,7 @@ pub(crate) fn draw(
         );
         gl.uniform_1_f32(loc("u_corner_radius_px").as_ref(), params.corner_radius_px);
         gl.uniform_1_i32(loc("u_encode_srgb").as_ref(), i32::from(encode_srgb));
+        gl.uniform_1_f32(loc("u_opacity").as_ref(), params.opacity);
 
         // The blurred scratch on texture unit 0; the sampler uniform points there.
         gl.active_texture(glow::TEXTURE0);

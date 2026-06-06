@@ -4,7 +4,7 @@
 //! (DESIGN §4.1). [`ResolvedMask`] is the one shader input core computes; [`BlurRequest`] is
 //! the bundle that crosses the seam.
 
-use crate::material::{BlurStrength, CornerRadius, Tint};
+use crate::material::{BlurStrength, CornerRadius, Opacity, Tint};
 
 /// A logical→physical scale factor (DPI) for one region. Strictly positive by construction:
 /// a zero or negative factor would make the resolution math degenerate (every resolved radius
@@ -137,6 +137,8 @@ pub struct BlurRequest {
     pub tint: Tint,
     /// How round the surface corners are (logical points).
     pub corner_radius: CornerRadius,
+    /// Surface-global fade coverage `[0, 1]` — how present the whole surface is (default `1.0`).
+    pub opacity: Opacity,
 }
 
 impl BlurRequest {
@@ -259,6 +261,7 @@ mod tests {
             strength: BlurStrength::new(8.0),
             tint: Tint::new(LinearRgba::new(0.1, 0.1, 0.12, 0.7)),
             corner_radius: CornerRadius::new(10.0),
+            opacity: Opacity::default(),
         };
         assert!(close(request.physical_blur_radius(), 16.0));
     }
@@ -273,6 +276,7 @@ mod tests {
             strength: BlurStrength::new(12.0),
             tint: Tint::new(LinearRgba::new(0.1, 0.1, 0.12, 0.7)),
             corner_radius: CornerRadius::new(10.0),
+            opacity: Opacity::default(),
         };
         assert_eq!(request.strength.points(), 12.0);
         assert!(close(request.tint.color().a(), 0.7));

@@ -9,7 +9,7 @@
 #![cfg(feature = "image-snapshots")]
 
 use backdrop_blur_core::{
-    BackdropBlur, BlurRequest, BlurStrength, CornerRadius, LinearRgba, Region, Scale, Tint,
+    BackdropBlur, BlurRequest, BlurStrength, CornerRadius, LinearRgba, Opacity, Region, Scale, Tint,
 };
 use backdrop_blur_wgpu::{SourceColorSpace, SourceView, WgpuBlur};
 
@@ -160,6 +160,7 @@ fn frost_and_read(
     backdrop: &wgpu::Texture,
     strength: f32,
     tint: Tint,
+    opacity: f32,
 ) -> Vec<u8> {
     let target = device.create_texture(&wgpu::TextureDescriptor {
         label: Some("target"),
@@ -186,6 +187,7 @@ fn frost_and_read(
         strength: BlurStrength::new(strength),
         tint,
         corner_radius: CornerRadius::new(24.0),
+        opacity: Opacity::new(opacity),
     };
     let source = SourceView {
         view: backdrop.create_view(&wgpu::TextureViewDescriptor::default()),
@@ -330,6 +332,7 @@ fn frosted_panel_blurs_the_backdrop_inside_the_masked_rect() {
         strength: BlurStrength::new(10.0),
         tint: Tint::new(LinearRgba::new(0.0, 0.0, 0.0, 0.15)), // faint darkening film
         corner_radius: CornerRadius::new(24.0),
+        opacity: Opacity::default(),
     };
 
     let source = SourceView {
@@ -429,6 +432,7 @@ fn dual_kawase_preserves_energy_on_a_flat_backdrop() {
         &gray,
         30.0,
         Tint::new(LinearRgba::new(0.0, 0.0, 0.0, 0.0)),
+        1.0,
     );
 
     // Panel centre, far from the panel edges: still ~128 (flat in, flat out).
@@ -454,6 +458,7 @@ fn dual_kawase_blurs_a_large_radius_edge() {
         &edge,
         18.0,
         Tint::new(LinearRgba::new(0.0, 0.0, 0.0, 0.1)),
+        1.0,
     );
 
     let [r, _, b, _] = pixel(&out, 100, 100);
@@ -523,6 +528,7 @@ fn translucent_panel_edge_has_no_halo() {
         &black,
         8.0,
         Tint::from_srgb_unmultiplied([240, 240, 240, 204]),
+        1.0,
     );
     assert_no_edge_halo(&out, 30, 90);
 
@@ -534,6 +540,53 @@ fn translucent_panel_edge_has_no_halo() {
         &white,
         8.0,
         Tint::from_srgb_unmultiplied([20, 20, 20, 204]),
+        1.0,
     );
     assert_no_edge_halo(&out, 30, 90);
+}
+
+/// The surface-global fade (`Opacity`) is a real linear blend toward the untouched destination:
+/// `out(opacity) == lerp(D, F, opacity)` where `D` is the destination (the seeded backdrop) and
+/// `F` is the fully-present (opacity=1) composite. Sampled at the panel interior (coverage=1), so
+/// the per-pixel coverage is out of it and the only variable is the master opacity — the corrected
+/// oracle (the draft's `0.5*coverage` double-applied coverage). `opacity=0` must leave `D` untouched.
+#[test]
+fn opacity_fades_the_surface_linearly_toward_the_destination() {
+    let (device, queue) = software_device();
+    let backdrop = backdrop_texture(&device, &queue);
+    let tint = Tint::new(LinearRgba::new(0.0, 0.0, 0.0, 0.2)); // a darkening film, so F != D
+    let strength = 16.0;
+
+    let out0 = frost_and_read(&device, &queue, &backdrop, strength, tint, 0.0);
+    let half = frost_and_read(&device, &queue, &backdrop, strength, tint, 0.5);
+    let full = frost_and_read(&device, &queue, &backdrop, strength, tint, 1.0);
+    let dest = read_back(&device, &queue, &backdrop); // D: the untouched destination
+
+    // opacity = 0 leaves the destination untouched (the surface is absent).
+    let (cx, cy) = (100, 100); // panel interior (panel = [50,50]+100x100), coverage = 1
+    for c in 0..4 {
+        let d = dest[((cy * DIM + cx) * 4) as usize + c as usize];
+        let o0 = pixel(&out0, cx, cy)[c];
+        assert!(
+            (i32::from(d) - i32::from(o0)).abs() <= 1,
+            "opacity=0 must equal the destination at the interior (channel {c}: D={d} out0={o0})"
+        );
+    }
+
+    // opacity = 0.5 is the linear midpoint between D (out0) and F (full): out_half ≈ lerp(D, F, 0.5).
+    for c in 0..4 {
+        let d = i32::from(pixel(&out0, cx, cy)[c]);
+        let f = i32::from(pixel(&full, cx, cy)[c]);
+        let expected = (d + f + 1) / 2; // round-to-nearest midpoint
+        let got = i32::from(pixel(&half, cx, cy)[c]);
+        assert!(
+            (got - expected).abs() <= 2,
+            "opacity=0.5 must be lerp(D,F,0.5) at the interior (channel {c}: D={d} F={f} \
+             expected≈{expected} got={got})"
+        );
+    }
+
+    // Sanity: the fade actually moves the pixel (F differs from D), or the oracle is vacuous.
+    let moved = (0..3).any(|c| pixel(&full, cx, cy)[c] != pixel(&out0, cx, cy)[c]);
+    assert!(moved, "the frost must change the interior pixel, else the oracle proves nothing");
 }

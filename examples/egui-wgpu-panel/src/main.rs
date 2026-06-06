@@ -16,7 +16,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use backdrop_blur_egui::{
-    BlurStrength, CornerRadius, FrameInput, LinearRgba, OwnLoopRenderer, RepaintPolicy,
+    BlurStrength, CornerRadius, FrameInput, LinearRgba, Opacity, OwnLoopRenderer, RepaintPolicy,
     ScreenDescriptor, Surface, Tint, WgpuBlur,
 };
 use winit::application::ApplicationHandler;
@@ -218,6 +218,7 @@ impl App {
             strength: BlurStrength::new(self.strength),
             tint: Tint::new(LinearRgba::new(0.04, 0.05, 0.08, 0.35)),
             corner_radius: CornerRadius::new(24.0),
+            opacity: Opacity::default(),
             repaint: RepaintPolicy::Live,
         };
         let surfaces: &[Surface] = if self.blur_on {

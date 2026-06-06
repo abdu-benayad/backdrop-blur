@@ -161,3 +161,13 @@ insight (`effective = coverage·opacity`, identical on both backends, §2d no-ha
   the opacity=0 "bit-identical" claim (rests on the `src.a=0` short-circuit) + the no-op-draw perf nit.
 - **Sound, no change:** newtype altitude (peer of Tint, not a field on it), the name `Opacity` (`Coverage` is
   taken by the shader AA term), `FULL` + `Default` ergonomics, sRGB encode ordering, the `_pad` reuse layout.
+
+**As-built (implemented + verified):** core `Opacity` (clamps + scrubs non-finite→1.0, 3 unit tests);
+threaded through `BlurRequest`/`Surface` and both backends' composite params; both shaders fold
+`coverage·opacity`. All 12 struct-literal sites updated; `Opacity` re-exported from both `lib.rs`. The
+`composite_params_layout_matches_wgsl` and glow `program.rs` shader-text guards were amended. **Empirical
+gate met on both backends** via the corrected `lerp(D, F, opacity)` oracle: wgpu `image-snapshots`
+(`opacity_fades_…`, + the opacity-1 goldens unchanged) and glow `gl-snapshots`
+(`opacity_fades_…`, + opacity-1 readbacks byte-identical). Default tier (fmt/clippy/test) green. Note: the
+glow `gl-snapshots` readback tier must run `--test-threads=1` (parallel GL contexts are flaky in the
+harness — pre-existing, documented).

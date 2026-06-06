@@ -367,6 +367,7 @@ impl BackdropBlur for WgpuBlur {
             backdrop_uv_scale,
             mask.corner_radius_px,
             encode_srgb,
+            request.opacity.value(),
         );
         let composite_buf = uniform_buffer(device, &composite, "backdrop-blur composite");
 

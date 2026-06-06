@@ -33,6 +33,7 @@ impl Surface {
             strength: self.strength,
             tint: self.tint,
             corner_radius: self.corner_radius,
+            opacity: self.opacity,
         }
     }
 }
@@ -389,6 +390,7 @@ mod tests {
             strength: BlurStrength::new(8.0),
             tint: Tint::new(backdrop_blur_core::LinearRgba::new(0.0, 0.0, 0.0, 0.1)),
             corner_radius: CornerRadius::new(12.0),
+            opacity: backdrop_blur_core::Opacity::default(),
             repaint: RepaintPolicy::Static,
         }
     }

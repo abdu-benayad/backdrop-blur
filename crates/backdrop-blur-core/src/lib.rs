@@ -38,5 +38,5 @@ pub use error::{BackendError, BlurError, BlurStage};
 pub use geometry::{BlurRequest, Region, ResolvedMask, Scale};
 pub use gl_region::GlRegion;
 pub use liveness::RepaintPolicy;
-pub use material::{BlurStrength, CornerRadius, LinearRgba, Tint};
+pub use material::{BlurStrength, CornerRadius, LinearRgba, Opacity, Tint};
 pub use seam::{BackdropBlur, GrabPass};

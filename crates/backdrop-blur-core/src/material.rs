@@ -181,6 +181,47 @@ impl CornerRadius {
     }
 }
 
+/// Surface-global **fade coverage** in `[0, 1]` — how *present* the whole frosted surface is,
+/// distinct from [`Tint`]'s alpha (which is the film *mix*, blur vs tint color) and from
+/// [`BlurStrength`] (the radius). It scales the composite's final blend weight: `1.0` is the
+/// surface fully composited (the default — every existing caller and golden is unchanged), `0.0`
+/// leaves the destination untouched (the surface absent), and a fractional value blends the
+/// frosted result over the destination by that factor. A consumer animating a surface in/out
+/// (a modal scrim fading with its dialog) drives this per frame.
+///
+/// Two-sided clamp `[0, 1]` (unlike [`BlurStrength`]/[`CornerRadius`], which clamp only the
+/// lower bound) — the precedent is [`LinearRgba`]'s alpha. Non-finite input falls back to `1.0`
+/// (fully present, behavior-preserving), **not** `0.0`: a `NaN` propagates through `f32::clamp`,
+/// and a silently-invisible surface is a worse failure than a silently-opaque one.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Opacity(f32);
+
+impl Opacity {
+    /// A fully-present surface — the default.
+    pub const FULL: Self = Self(1.0);
+
+    /// Construct from a `[0, 1]` factor. Out-of-range clamps; non-finite (`NaN`/`±∞`) falls back
+    /// to `1.0` (fully present).
+    pub fn new(factor: f32) -> Self {
+        Self(if factor.is_finite() {
+            factor.clamp(0.0, 1.0)
+        } else {
+            1.0
+        })
+    }
+
+    /// The fade factor in `[0, 1]`.
+    pub fn value(self) -> f32 {
+        self.0
+    }
+}
+
+impl Default for Opacity {
+    fn default() -> Self {
+        Self::FULL
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -268,5 +309,27 @@ mod tests {
         let tint = Tint::from_srgb_unmultiplied([255, 255, 255, 64]);
         assert!(close(tint.color().r(), 1.0));
         assert!(close(tint.color().a(), 64.0 / 255.0));
+    }
+
+    #[test]
+    fn opacity_new_clamps_into_unit_range() {
+        assert_eq!(Opacity::new(-1.0).value(), 0.0);
+        assert_eq!(Opacity::new(2.0).value(), 1.0);
+        assert!(close(Opacity::new(0.3).value(), 0.3));
+    }
+
+    #[test]
+    fn opacity_new_scrubs_non_finite_to_full() {
+        // Non-finite falls back to 1.0 (fully present), NOT 0.0 — a NaN propagates through
+        // f32::clamp, and an invisible surface is the worse silent failure.
+        assert_eq!(Opacity::new(f32::NAN).value(), 1.0);
+        assert_eq!(Opacity::new(f32::INFINITY).value(), 1.0);
+        assert_eq!(Opacity::new(f32::NEG_INFINITY).value(), 1.0);
+    }
+
+    #[test]
+    fn opacity_default_and_full_are_one() {
+        assert_eq!(Opacity::default().value(), 1.0);
+        assert_eq!(Opacity::FULL.value(), 1.0);
     }
 }

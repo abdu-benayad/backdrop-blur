@@ -274,8 +274,11 @@ mod tests {
         assert!(GAUSSIAN_FRAG.contains("2.4"));
         assert!(COMPOSITE_FRAG.contains("0.0031308"));
         assert!(COMPOSITE_FRAG.contains("12.92"));
-        // The premultiplied output contract (DESIGN §2f): encode-then-cover, out_a == coverage.
-        assert!(COMPOSITE_FRAG.contains("rgb * coverage, coverage"));
+        // The premultiplied output contract (DESIGN §2f): encode-then-cover, out_a == the effective
+        // coverage. With the surface-global fade (OPACITY.md), that weight is `coverage * u_opacity`
+        // folded into both rgb and alpha — `vec4(rgb * a, a)` with `a = coverage * u_opacity`.
+        assert!(COMPOSITE_FRAG.contains("coverage * u_opacity"));
+        assert!(COMPOSITE_FRAG.contains("rgb * a, a"));
     }
 
     #[test]

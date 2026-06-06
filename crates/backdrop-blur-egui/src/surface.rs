@@ -5,7 +5,7 @@
 //! — not in either feature-gated module — is what lets a grab-pass-only (kiosk) build name a
 //! `Surface` without compiling the wgpu stack.
 
-use backdrop_blur_core::{BlurStrength, CornerRadius, RepaintPolicy, Tint};
+use backdrop_blur_core::{BlurStrength, CornerRadius, Opacity, RepaintPolicy, Tint};
 
 /// A frosted surface to composite this frame: an egui-space rectangle (logical points) plus the
 /// glass parameters and a liveness policy. v1 treats the backdrop directly behind the rect as the
@@ -25,6 +25,9 @@ pub struct Surface {
     pub tint: Tint,
     /// How round the corners are.
     pub corner_radius: CornerRadius,
+    /// Surface-global fade `[0, 1]` — how present the whole surface is (default `1.0`). Drive this
+    /// per frame to dissolve the frost in/out (e.g. a modal scrim fading with its dialog).
+    pub opacity: Opacity,
     /// How often the backdrop must be refreshed (drives `request_repaint`).
     pub repaint: RepaintPolicy,
 }

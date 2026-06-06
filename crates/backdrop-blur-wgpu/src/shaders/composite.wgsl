@@ -18,7 +18,8 @@ struct CompositeParams {
     backdrop_uv_scale: vec2<f32>,
     corner_radius_px: f32,        // clamped, in framebuffer px
     encode_srgb: u32,             // 1 = manually linear→sRGB encode the output
-    _pad: vec2<f32>,
+    opacity: f32,                 // surface-global fade in [0,1]; scales the final blend weight
+    _pad: f32,
 };
 
 @group(0) @binding(0) var blurred_tex: texture_2d<f32>;
@@ -72,5 +73,7 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
     if (params.encode_srgb == 1u) {
         rgb = linear_to_srgb(rgb);
     }
-    return vec4<f32>(rgb, coverage);
+    // Surface-global fade: scale the straight-alpha blend weight. The edge color `rgb` is
+    // unchanged, so the §2d monotonic no-halo property holds at any opacity.
+    return vec4<f32>(rgb, coverage * params.opacity);
 }
