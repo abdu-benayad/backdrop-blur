@@ -5,7 +5,9 @@
 //! real egui-wgpu render path; the default tier covers the surface→prepare/record wiring.
 //!
 //! Runs only with `--features image-snapshots` on a Vulkan software-rasterizer host.
-#![cfg(feature = "image-snapshots")]
+//! `image-snapshots` implies `own-loop`; the `all(...)` gate is defense in depth so this file is
+//! never even parsed in a grab-pass-only build.
+#![cfg(all(feature = "image-snapshots", feature = "own-loop"))]
 
 use backdrop_blur_core::{BlurStrength, CornerRadius, LinearRgba, RepaintPolicy, Tint};
 use backdrop_blur_egui::{FrameInput, OwnLoopRenderer, Surface};

@@ -9,16 +9,29 @@
 //! accessibility stay the host's: a frosted [`Surface`] is a post-render composite, never an egui
 //! widget, so it adds nothing to the AccessKit tree.
 //!
-//! Mainstream `eframe`-on-glow reach is a later, separate path (`backdrop-blur-glow`); this is the
-//! own-loop/wgpu adapter only.
+//! The crate is **feature-split** into two adapter paths over one shared [`Surface`] vocabulary:
+//! `own-loop` (default; the egui-wgpu path here) and `grab-pass` (the eframe-on-glow path, added
+//! in the glow increment). A kiosk/grab-pass build activates neither wgpu nor egui-wgpu — the
+//! own-loop deps are optional and gated. The mainstream `eframe`-on-glow backend itself is the
+//! separate `backdrop-blur-glow` crate.
 #![forbid(unsafe_code)]
 
+mod surface;
+
+#[cfg(feature = "own-loop")]
 mod own_loop;
 
-// Re-export everything an own-loop consumer needs through this one facade crate: the glass
-// material vocabulary (used in `Surface`), the wgpu backend (`render_frame` drives it), and the
-// egui-wgpu screen descriptor (`FrameInput` carries it).
+// Neutral spine — available on both paths: the glass material vocabulary (used in `Surface`) and
+// the shared `Surface` type itself.
 pub use backdrop_blur_core::{BlurStrength, CornerRadius, LinearRgba, RepaintPolicy, Tint};
+pub use surface::Surface;
+
+// Own-loop path re-exports: the wgpu backend (`render_frame` drives it), the egui-wgpu screen
+// descriptor (`FrameInput` carries it), and the renderer. Gated so a grab-pass-only build pulls
+// none of the wgpu stack.
+#[cfg(feature = "own-loop")]
 pub use backdrop_blur_wgpu::{SourceColorSpace, SourceView, WgpuBlur};
+#[cfg(feature = "own-loop")]
 pub use egui_wgpu::ScreenDescriptor;
-pub use own_loop::{FrameInput, OwnLoopRenderer, Surface, is_supported_target, strongest_repaint};
+#[cfg(feature = "own-loop")]
+pub use own_loop::{FrameInput, OwnLoopRenderer, is_supported_target, strongest_repaint};

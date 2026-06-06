@@ -2,29 +2,14 @@
 //! into an offscreen intermediate, then blur a region and composite the frosted surface into the
 //! target — in the one order that does not panic (DESIGN §6, M4-corrected).
 
-use backdrop_blur_core::{
-    BackdropBlur, BlurError, BlurRequest, BlurStrength, CornerRadius, Region, RepaintPolicy, Scale,
-    Tint,
-};
+use crate::Surface;
+use backdrop_blur_core::{BackdropBlur, BlurError, BlurRequest, Region, RepaintPolicy, Scale};
 use backdrop_blur_wgpu::{SourceColorSpace, SourceView, WgpuBlur};
 
-/// A frosted surface to composite this frame: an egui-space rectangle (logical points) plus the
-/// glass parameters and a liveness policy. v1 treats the backdrop directly behind the rect as the
-/// blur source (`source_region == target_rect`).
-#[derive(Clone, Copy, Debug)]
-pub struct Surface {
-    /// Where the surface sits, in egui logical points.
-    pub rect: egui::Rect,
-    /// How much blur.
-    pub strength: BlurStrength,
-    /// The glass film.
-    pub tint: Tint,
-    /// How round the corners are.
-    pub corner_radius: CornerRadius,
-    /// How often the backdrop must be refreshed (drives `request_repaint`).
-    pub repaint: RepaintPolicy,
-}
-
+/// Own-loop-only resolution of a [`Surface`]. This `impl` lives in the `own-loop`-gated module on
+/// purpose: it builds a **top-left** [`BlurRequest`] (the egui-wgpu sampling convention), which is
+/// wrong for the grab-pass path, so gating the module makes `request` *uncallable* from a
+/// grab-pass build — the relocated-flip bug is unrepresentable rather than merely discouraged.
 impl Surface {
     /// Resolve to a physical-pixel [`BlurRequest`]. The egui rect (points) scales by
     /// `pixels_per_point`; the backdrop behind the surface is the same screen area.
@@ -345,6 +330,7 @@ mod tests {
     // submit) needs real egui-wgpu + a GPU, so it is covered only by the gated `own_loop_render`
     // test (`--features image-snapshots`, lavapipe), not the always-on `cargo test`.
     use super::*;
+    use backdrop_blur_core::{BlurStrength, CornerRadius, Tint};
     use std::cell::RefCell;
 
     #[test]

@@ -11,18 +11,29 @@ keywords.workspace = true
 categories.workspace = true
 
 [dependencies]
+# Neutral spine — both the own-loop and grab-pass paths need these.
 backdrop-blur-core = { workspace = true }
-backdrop-blur-wgpu = { workspace = true }
 egui = { workspace = true }
-# default-features = false keeps winit OUT of the library — only the example pulls winit.
-egui-wgpu = { workspace = true }
-wgpu = { workspace = true }
+# Own-loop (egui-wgpu) backend deps — optional, activated only by the `own-loop` feature, so a
+# kiosk/grab-pass build pulls neither wgpu nor egui-wgpu. default-features = false (on egui-wgpu,
+# in the workspace pin) keeps winit OUT of the library — only the example pulls winit.
+backdrop-blur-wgpu = { workspace = true, optional = true }
+egui-wgpu = { workspace = true, optional = true }
+wgpu = { workspace = true, optional = true }
 
 [dev-dependencies]
 egui_kittest = { workspace = true }
 pollster = "0.4"
 
 [features]
+default = ["own-loop"]
+# The own-loop path: the egui-wgpu adapter (OwnLoopRenderer) that renders to an intermediate and
+# composites the frosted surface. Pulls the wgpu stack.
+own-loop = ["dep:backdrop-blur-wgpu", "dep:egui-wgpu", "dep:wgpu"]
+# The grab-pass path: the eframe-on-glow adapter. Spine-only here; the `dep:backdrop-blur-glow`
+# entry is added in glow IMPL Step 3, once that crate exists (a `dep:` to an absent crate fails
+# manifest parse and would red the whole workspace).
+grab-pass = []
 # Gates the GPU tier: a headless lavapipe test that drives real egui-wgpu rendering + blur and
-# reads the frosted result back. The default `cargo test` runs the GPU-free wiring tests only.
-image-snapshots = []
+# reads the frosted result back. Hard-imports the wgpu backend, so it requires `own-loop`.
+image-snapshots = ["own-loop"]

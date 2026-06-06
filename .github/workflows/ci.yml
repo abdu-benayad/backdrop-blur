@@ -85,3 +85,7 @@ jobs:
         run: |
           cargo clippy --manifest-path examples/egui-wgpu-panel/Cargo.toml -- -D warnings
           cargo build --manifest-path examples/egui-wgpu-panel/Cargo.toml
+      - name: headless frost gallery (own-loop, depends on the egui adapter API)
+        run: |
+          cargo clippy --manifest-path examples/frost-gallery/Cargo.toml -- -D warnings
+          cargo build --manifest-path examples/frost-gallery/Cargo.toml
