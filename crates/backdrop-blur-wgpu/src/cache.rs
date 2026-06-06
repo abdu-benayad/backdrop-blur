@@ -14,8 +14,8 @@ use wgpu::TextureFormat;
 // `pub(crate)` (not `pub`) preserves this crate's API surface: these were `pub(crate)` before
 // the hoist, and a bare `pub use` would re-export them as public items of `backdrop-blur-wgpu`.
 pub(crate) use backdrop_blur_core::{
-    PingPongKey, TargetEncoding, backdrop_uv_remap, kawase_halfpixel, kawase_level_size,
-    resolve_gaussian, resolve_kawase_levels, use_dual_kawase,
+    PingPongKey, RETENTION_FRAMES, TargetEncoding, backdrop_uv_remap, evict_decision,
+    kawase_halfpixel, kawase_level_size, resolve_gaussian, resolve_kawase_levels, use_dual_kawase,
 };
 
 /// The internal scratch format — linear HDR, filterable, usable as both a render target and a

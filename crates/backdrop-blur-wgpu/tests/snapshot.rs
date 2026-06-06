@@ -565,7 +565,7 @@ fn opacity_fades_the_surface_linearly_toward_the_destination() {
     // opacity = 0 leaves the destination untouched (the surface is absent).
     let (cx, cy) = (100, 100); // panel interior (panel = [50,50]+100x100), coverage = 1
     for c in 0..4 {
-        let d = dest[((cy * DIM + cx) * 4) as usize + c as usize];
+        let d = dest[((cy * DIM + cx) * 4) as usize + c];
         let o0 = pixel(&out0, cx, cy)[c];
         assert!(
             (i32::from(d) - i32::from(o0)).abs() <= 1,
@@ -591,5 +591,54 @@ fn opacity_fades_the_surface_linearly_toward_the_destination() {
     assert!(
         moved,
         "the frost must change the interior pixel, else the oracle proves nothing"
+    );
+}
+
+/// The dragged/resized-surface leak guard: frosting a surface whose size changes every frame must
+/// NOT accumulate one scratch chain per distinct size. Drive `prepare` across many distinct sizes
+/// over far more than `RETENTION_FRAMES` frames and assert the cache stays bounded near the
+/// retention window rather than growing with the frame count. `prepare` alone both populates the
+/// cache (`ensure_*`) and runs the eviction (`begin_frame`), so no record/target is needed.
+#[test]
+fn scratch_cache_evicts_old_sizes_instead_of_leaking() {
+    let (device, queue) = software_device();
+    let backdrop = flat_backdrop(&device, &queue, 128);
+    let source = SourceView {
+        view: backdrop.create_view(&wgpu::TextureViewDescriptor::default()),
+        size: [DIM, DIM],
+        color_space: SourceColorSpace::GammaSrgb,
+    };
+    let mut blur = WgpuBlur::new(&device);
+
+    // 40 frames, each a DISTINCT panel size → 40 distinct PingPongKeys if nothing ever evicts.
+    let frames = 40u32;
+    for i in 0..frames {
+        let panel = region([0, 0], [40 + i, 40]);
+        let request = BlurRequest {
+            source_region: panel,
+            target_rect: panel,
+            strength: BlurStrength::new(6.0),
+            tint: Tint::new(LinearRgba::new(1.0, 1.0, 1.0, 0.1)),
+            corner_radius: CornerRadius::new(8.0),
+            opacity: Opacity::new(1.0),
+        };
+        let _prepared = blur
+            .prepare(
+                &device,
+                &queue,
+                &source,
+                wgpu::TextureFormat::Rgba8Unorm,
+                &request,
+            )
+            .expect("prepare");
+    }
+
+    // Retention is 8 frames; with one distinct size touched per frame, frame 40 keeps only the last
+    // ~8 chains. Without eviction this would be `frames` (40). The generous bound still catches a
+    // regression to the old insert-only cache decisively.
+    let cached = blur.cached_chain_count();
+    assert!(
+        cached <= 12,
+        "scratch cache grew to {cached} chains across {frames} resizes — eviction is not bounding it"
     );
 }

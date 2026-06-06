@@ -36,8 +36,9 @@ mod cache;
 mod uniforms;
 
 use cache::{
-    PingPongKey, SCRATCH_FORMAT, TargetEncoding, backdrop_uv_remap, composite_encode_srgb,
-    kawase_halfpixel, kawase_level_size, resolve_gaussian, resolve_kawase_levels, use_dual_kawase,
+    PingPongKey, RETENTION_FRAMES, SCRATCH_FORMAT, TargetEncoding, backdrop_uv_remap,
+    composite_encode_srgb, evict_decision, kawase_halfpixel, kawase_level_size, resolve_gaussian,
+    resolve_kawase_levels, use_dual_kawase,
 };
 use uniforms::{CompositeParams, GaussianParams, KawaseParams};
 
@@ -102,6 +103,17 @@ enum PreparedBlur {
 /// the views are stored — a `wgpu::TextureView` keeps its parent texture alive by refcount.
 struct ScratchChain {
     views: [wgpu::TextureView; 2],
+    /// The frame this chain was last touched by `ensure_scratch`; drives last-frame-used eviction.
+    last_used_frame: u64,
+}
+
+/// A dual-Kawase mip pyramid plus the frame it was last used: `N + 1` decreasing-size views (level 0
+/// = full clipped size). The `last_used_frame` drives last-frame-used eviction, exactly as
+/// [`ScratchChain`] does for the Gaussian path.
+struct PyramidChain {
+    views: Vec<wgpu::TextureView>,
+    /// The frame this chain was last touched by `ensure_pyramid`; drives last-frame-used eviction.
+    last_used_frame: u64,
 }
 
 /// The wgpu implementation of [`BackdropBlur`]. Holds the fixed pipeline machinery (bind-group
@@ -119,7 +131,11 @@ pub struct WgpuBlur {
     composite_pipelines: HashMap<wgpu::TextureFormat, wgpu::RenderPipeline>,
     scratch: HashMap<PingPongKey, ScratchChain>,
     /// Dual-Kawase mip pyramids: `N + 1` decreasing-size views, level 0 = full clipped size.
-    pyramids: HashMap<PingPongKey, Vec<wgpu::TextureView>>,
+    pyramids: HashMap<PingPongKey, PyramidChain>,
+    /// Advanced once per `prepare` ([`Self::begin_frame`]); the "now" last-frame-used eviction
+    /// compares each chain's `last_used_frame` against, so a resized/moved surface's old-size chains
+    /// are dropped instead of accumulating one per distinct size forever.
+    frame: u64,
     /// Bumped each `prepare`; stamped into [`WgpuPrepared`] so `record` can detect a stale handle.
     generation: u64,
 }
@@ -223,6 +239,7 @@ impl WgpuBlur {
             composite_pipelines: HashMap::new(),
             scratch: HashMap::new(),
             pyramids: HashMap::new(),
+            frame: 0,
             generation: 0,
         }
     }
@@ -231,9 +248,36 @@ impl WgpuBlur {
 // --- Internal resource management ---
 
 impl WgpuBlur {
-    /// Create the two Gaussian ping-pong textures for `key` if not already cached.
+    /// Advance to the next frame and evict every scratch/pyramid chain untouched for
+    /// [`RETENTION_FRAMES`]. Called once at the top of [`prepare`](BackdropBlur::prepare), before any
+    /// `ensure_*`, so the chain a surface is about to use this frame is never evicted. Dropping a
+    /// `HashMap` entry drops its `wgpu::TextureView`s, releasing the underlying textures by refcount
+    /// — no explicit GPU free. The stale-set decision is the pure, core-shared [`evict_decision`].
+    fn begin_frame(&mut self) {
+        self.frame = self.frame.wrapping_add(1);
+        let stale = evict_decision(
+            self.scratch.iter().map(|(k, c)| (*k, c.last_used_frame)),
+            self.frame,
+            RETENTION_FRAMES,
+        );
+        for key in stale {
+            self.scratch.remove(&key);
+        }
+        let stale = evict_decision(
+            self.pyramids.iter().map(|(k, c)| (*k, c.last_used_frame)),
+            self.frame,
+            RETENTION_FRAMES,
+        );
+        for key in stale {
+            self.pyramids.remove(&key);
+        }
+    }
+
+    /// Create the two Gaussian ping-pong textures for `key` if not already cached, and mark the chain
+    /// used this frame so eviction keeps it.
     fn ensure_scratch(&mut self, device: &wgpu::Device, key: PingPongKey) {
-        if self.scratch.contains_key(&key) {
+        if let Some(chain) = self.scratch.get_mut(&key) {
+            chain.last_used_frame = self.frame;
             return;
         }
         let view_a = scratch_view(device, key.size, "backdrop-blur scratch A");
@@ -242,6 +286,7 @@ impl WgpuBlur {
             key,
             ScratchChain {
                 views: [view_a, view_b],
+                last_used_frame: self.frame,
             },
         );
     }
@@ -249,7 +294,8 @@ impl WgpuBlur {
     /// Create the dual-Kawase mip pyramid for `key` (`key.levels` = `N` → `N + 1` views, level 0
     /// at the full clipped size, level `i` halved) if not already cached.
     fn ensure_pyramid(&mut self, device: &wgpu::Device, key: PingPongKey) {
-        if self.pyramids.contains_key(&key) {
+        if let Some(chain) = self.pyramids.get_mut(&key) {
+            chain.last_used_frame = self.frame;
             return;
         }
         let views = (0..=key.levels)
@@ -258,7 +304,13 @@ impl WgpuBlur {
                 scratch_view(device, size, "backdrop-blur kawase mip")
             })
             .collect();
-        self.pyramids.insert(key, views);
+        self.pyramids.insert(
+            key,
+            PyramidChain {
+                views,
+                last_used_frame: self.frame,
+            },
+        );
     }
 
     /// Build and cache the composite pipeline for `format` if not already present.
@@ -305,6 +357,18 @@ impl WgpuBlur {
     }
 }
 
+// --- Test-support (gated) ---
+
+#[cfg(feature = "image-snapshots")]
+impl WgpuBlur {
+    /// The number of cached scratch + pyramid chains. Exposed only under the `image-snapshots` test
+    /// feature so the gated GPU tier can assert eviction actually bounds the cache as a surface is
+    /// dragged/resized (the leak guard). Not part of the public API.
+    pub fn cached_chain_count(&self) -> usize {
+        self.scratch.len() + self.pyramids.len()
+    }
+}
+
 // --- The seam ---
 
 impl BackdropBlur for WgpuBlur {
@@ -327,6 +391,13 @@ impl BackdropBlur for WgpuBlur {
         let Some(clipped) = request.source_region.clip_to(source.size) else {
             return Ok(None); // zero-area or fully-offscreen region → no-op
         };
+
+        // Advance the eviction clock and drop scratch chains untouched for RETENTION_FRAMES, before
+        // ensuring this frame's chain — so a resized/moved surface's old-size chains are freed rather
+        // than accumulating. Placed *after* the clip guard, mirroring the glow backend (blur.rs:99):
+        // the counter counts frosted frames, so a surface that clips to nothing does not age out a
+        // chain it is about to reuse when it returns on-screen.
+        self.begin_frame();
 
         let encode_srgb = matches!(
             composite_encode_srgb(target_format).ok_or_else(|| BlurError::UnsupportedTarget {
@@ -414,6 +485,7 @@ impl BackdropBlur for WgpuBlur {
                     stage: BlurStage::PingPongTexture,
                     source: "kawase pyramid missing immediately after ensure_pyramid".into(),
                 })?;
+            let pyramid = &pyramid.views;
             let prefilter_bind = self.bind(
                 device,
                 &source.view,
@@ -648,6 +720,7 @@ impl WgpuBlur {
                 up_binds,
             } => {
                 let pyramid = self.pyramids.get(key).ok_or_else(missing)?;
+                let pyramid = &pyramid.views;
                 let n = key.levels as usize;
                 // Prefilter: source (gamma, sub-rect) → mip 0 (linear), via the Gaussian pipeline
                 // at radius 0 (a pure decode + remap).

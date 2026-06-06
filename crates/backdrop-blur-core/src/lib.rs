@@ -23,6 +23,7 @@
 
 mod algorithm;
 mod error;
+mod eviction;
 mod geometry;
 mod gl_region;
 mod liveness;
@@ -35,6 +36,7 @@ pub use algorithm::{
     resolve_kawase_levels, use_dual_kawase,
 };
 pub use error::{BackendError, BlurError, BlurStage};
+pub use eviction::{RETENTION_FRAMES, evict_decision};
 pub use geometry::{BlurRequest, Region, ResolvedMask, Scale};
 pub use gl_region::GlRegion;
 pub use liveness::RepaintPolicy;
