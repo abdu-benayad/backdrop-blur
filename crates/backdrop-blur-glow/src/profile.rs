@@ -22,12 +22,26 @@ pub enum ShaderClass {
 /// The color-renderable float format for the linear scratch/grab textures. `RGBA16F` is preferred
 /// (linear HDR); the `sRGB8_ALPHA8` fallback keeps the blur renderable on a WebGL2/GLES context
 /// without `EXT_color_buffer_float` (no HDR headroom, but correct).
+///
+/// **The `sRGB8_ALPHA8` fallback's color-correctness rests on an implicit platform contract.** The
+/// blur passes write *linear* values to the scratch and rely on the hardware to encode linear→sRGB
+/// on write and decode sRGB→linear on the next sample (the perceptually-uniform 8-bit round-trip
+/// DESIGN §9 describes). The sample-side decode is unconditional everywhere, but the *write-side
+/// encode* to an sRGB attachment is automatic only where there is no `GL_FRAMEBUFFER_SRGB` enable to
+/// gate it — i.e. **GLES 3.0 and WebGL2** (GLES 3.0.6 §4.1.8 has no such enable; the encode is
+/// always-on for an sRGB target). On **desktop GL** that encode is gated on `GL_FRAMEBUFFER_SRGB`,
+/// which is default-disabled and this crate never enables, so the round-trip would be gamma-broken
+/// there. That case is unreachable by construction: [`classify`] only pairs `Srgb8Rgba8` with an
+/// *embedded* profile (desktop GL has `RGBA16F` color-renderable in core, GL 3.3 §3.9.1), pinned by
+/// a `debug_assert` there.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RenderableFloat {
     /// `RGBA16F` — linear HDR, color-renderable. Desktop GL 3.0+ always; GLES3/WebGL2 with
     /// `EXT_color_buffer_float`.
     Rgba16F,
-    /// `sRGB8_ALPHA8` fallback when float-render is unavailable.
+    /// `sRGB8_ALPHA8` fallback when float-render is unavailable. **Embedded (GLES/WebGL2) contexts
+    /// only** — its linear round-trip is correct solely under their automatic sRGB encode-on-write
+    /// (see the type-level note).
     Srgb8Rgba8,
 }
 
@@ -80,17 +94,28 @@ pub fn classify(version: &str, extensions: &[&str], samples: i32) -> GlProfile {
     } else {
         ShaderClass::GlDesktop
     };
-    // RGBA16F is color-renderable in desktop GL 3.0+ unconditionally. On GLES3/WebGL2 it requires
-    // EXT_color_buffer_float; without it, fall back to sRGB8_ALPHA8 (renderable everywhere). The
-    // extension may appear with or without the `GL_` prefix depending on the driver.
+    // RGBA16F is color-renderable in desktop GL 3.0+ unconditionally (GL 3.3 §3.9.1). On GLES3/WebGL2
+    // it requires EXT_color_buffer_float; without it, fall back to sRGB8_ALPHA8 (renderable
+    // everywhere). The extension may appear with or without the `GL_` prefix depending on the driver.
     let has_float_render = extensions
         .iter()
         .any(|e| *e == "EXT_color_buffer_float" || *e == "GL_EXT_color_buffer_float");
+    // The `!embedded` arm is load-bearing for *color-correctness*, not just preference: the
+    // sRGB8_ALPHA8 fallback's linear round-trip is correct only under the automatic sRGB
+    // encode-on-write of GLES 3.0 / WebGL2 (no GL_FRAMEBUFFER_SRGB to gate it). On desktop GL that
+    // encode is gated and default-off, so desktop must never take the fallback — and need not, since
+    // it always has RGBA16F renderable. See the `RenderableFloat` type note.
     let renderable_float = if !embedded || has_float_render {
         RenderableFloat::Rgba16F
     } else {
         RenderableFloat::Srgb8Rgba8
     };
+    // Invariant (implication form): Srgb8Rgba8 ⟹ embedded. See the `RenderableFloat` type note.
+    debug_assert!(
+        !matches!(renderable_float, RenderableFloat::Srgb8Rgba8) || embedded,
+        "the sRGB8_ALPHA8 fallback is color-correct only on embedded (GLES/WebGL2) contexts, where \
+         sRGB encode-on-write is automatic; a desktop GL context must resolve to RGBA16F"
+    );
     GlProfile {
         shader_class,
         embedded,
@@ -139,6 +164,19 @@ mod tests {
         assert_eq!(p.shader_class, ShaderClass::Es300);
         assert!(p.embedded);
         assert_eq!(p.renderable_float, RenderableFloat::Rgba16F);
+    }
+
+    #[test]
+    fn the_srgb8_fallback_is_never_paired_with_a_desktop_profile() {
+        // The safety invariant the fallback's color-correctness depends on (see RenderableFloat): the
+        // sRGB8_ALPHA8 scratch is only ever selected for an embedded context, where sRGB
+        // encode-on-write is automatic. A desktop string — with OR without the float extension —
+        // must resolve to RGBA16F, never the fallback.
+        for ext in [vec![], vec!["EXT_color_buffer_float"]] {
+            let p = classify("4.6.0 NVIDIA 535.288.01", &ext, 0);
+            assert!(!p.embedded);
+            assert_eq!(p.renderable_float, RenderableFloat::Rgba16F);
+        }
     }
 
     #[test]
