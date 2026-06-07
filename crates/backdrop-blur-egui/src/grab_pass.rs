@@ -89,6 +89,20 @@ impl GrabPassRenderer {
     /// the frosted surface back. The crate owns only the background; the surface's foreground is the
     /// host's (painted in its own later pass), and a frosted surface adds nothing to the AccessKit
     /// tree.
+    ///
+    /// # Contract (see the crate-root "Grab-pass contracts")
+    ///
+    /// - **Call this *before* painting the surface's foreground.** The callback grabs whatever is in
+    ///   the framebuffer at its position; content drawn after it lands on top of the blur, content
+    ///   drawn before it gets blurred away. There is no runtime guard — order is on the caller.
+    /// - **Fade via `surface.opacity`, not `ui.multiply_opacity`.** egui's opacity does not reach
+    ///   paint callbacks and silently no-ops on the blur; [`Opacity`] is the supported fade dial.
+    /// - **For a dynamically-sized surface, pass *last frame's* rect** (stashed in egui temp memory):
+    ///   the rect is unknown until content lays out, but the frost must be enqueued before it paints.
+    /// - After the frame, [`took_effect`](Self::took_effect) reports whether the callback *fired*
+    ///   (not whether pixels composited).
+    ///
+    /// [`Opacity`]: backdrop_blur_core::Opacity
     pub fn frost(&self, ui: &egui::Ui, surface: Surface) {
         // The adapter drives liveness — a stale backdrop cannot be silently forgotten (DESIGN §4.6).
         match surface.repaint {

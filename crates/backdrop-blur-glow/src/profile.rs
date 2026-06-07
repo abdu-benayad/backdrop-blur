@@ -31,7 +31,7 @@ pub enum ShaderClass {
 /// gate it — i.e. **GLES 3.0 and WebGL2** (GLES 3.0.6 §4.1.8 has no such enable; the encode is
 /// always-on for an sRGB target). On **desktop GL** that encode is gated on `GL_FRAMEBUFFER_SRGB`,
 /// which is default-disabled and this crate never enables, so the round-trip would be gamma-broken
-/// there. That case is unreachable by construction: [`classify`] only pairs `Srgb8Rgba8` with an
+/// there. That case is unreachable by construction: `classify` only pairs `Srgb8Rgba8` with an
 /// *embedded* profile (desktop GL has `RGBA16F` color-renderable in core, GL 3.3 §3.9.1), pinned by
 /// a `debug_assert` there.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

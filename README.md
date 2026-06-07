@@ -10,9 +10,65 @@ vibrancy, Vello does *shape* blur; neither is in-app, arbitrary-surface backdrop
 crate fills that gap once, so each toolkit needs only a thin adapter instead of re-deriving
 the render-to-texture + multi-tap convolution every time.
 
-> **Status: pre-release.** The safe wgpu/own-loop slice and the glow grab-pass backend are built
-> and tested; the API is not yet stable and nothing is published to crates.io. See
-> [`docs/IMPL.md`](docs/IMPL.md) and [`docs/GLOW_IMPL.md`](docs/GLOW_IMPL.md) for the build sequence.
+> **Status: pre-release (`0.1.x`).** The safe wgpu/own-loop slice and the glow grab-pass backend are
+> built and tested. The API is **not yet stable** — expect breaking changes before `1.0`, and pin an
+> exact version. See [`docs/IMPL.md`](docs/IMPL.md) and [`docs/GLOW_IMPL.md`](docs/GLOW_IMPL.md) for
+> the build sequence.
+
+## Using it (grab-pass / eframe-on-glow)
+
+The mainstream path. Build the renderer once from eframe's GL context, frost a surface each frame
+*before* painting its foreground, and free it on exit. Full runnable example:
+[`examples/eframe-glow-panel`](examples/eframe-glow-panel).
+
+```toml
+[dependencies]
+backdrop-blur-egui = { version = "0.1", default-features = false, features = ["grab-pass"] }
+```
+
+```rust,ignore
+use backdrop_blur_egui::{
+    BlurStrength, CornerRadius, GrabPassRenderer, Opacity, RepaintPolicy, Surface, Tint,
+};
+
+// Once, in eframe's creation closure (glow backend):
+let renderer = GrabPassRenderer::new(cc.gl.as_ref().expect("glow backend"))?;
+
+// Each frame, inside your panel — FROST FIRST, then paint the foreground on top:
+let surface = Surface {
+    rect: panel_rect,                                  // dynamic rect? pass LAST frame's (see below)
+    strength: BlurStrength::new(16.0),                 // blur radius, logical points
+    tint: Tint::from_srgb_unmultiplied([255, 255, 255, 40]), // film: alpha = tint vs. blur mix
+    corner_radius: CornerRadius::new(12.0),
+    opacity: Opacity::FULL,                            // fade dial — drive per frame, NOT multiply_opacity
+    repaint: RepaintPolicy::Static,                    // still content behind the glass
+};
+renderer.frost(ui, surface);
+// ...now paint the panel's text/controls so they land on top of the blur...
+
+// In eframe::App::on_exit, while the context is still current:
+// renderer.destroy(gl);
+```
+
+Three contracts the types can't enforce — read them before shipping: **frost before foreground**,
+**fade with `Opacity` (egui's `multiply_opacity` no-ops on paint callbacks)**, and for a
+dynamically-sized surface **pass last frame's rect** (the rect is unknown until content lays out, but
+the frost must enqueue before it paints — stash it in egui temp memory). The crate-root rustdoc
+("Grab-pass contracts") has the worked detail.
+
+## Compatibility
+
+An egui-ecosystem crate is bound to one egui minor. Pin to a row:
+
+| `backdrop-blur-*` | egui | egui_glow / egui-wgpu | wgpu | glow | MSRV |
+|---|---|---|---|---|---|
+| `0.1.x` | `0.34` | `0.34` | `29` | `0.17` | `1.92` |
+
+- **Feature flags** (`backdrop-blur-egui`): `grab-pass` → the glow/eframe path (pulls glow, **no
+  wgpu** — the kiosk-light config); `own-loop` (default) → the egui-wgpu path (pulls the wgpu stack).
+  Set `default-features = false` + `grab-pass` for the kiosk build.
+- **MSRV `1.92`** is set by egui/egui-wgpu 0.34 and wgpu 29; it is a floor a CI job verifies, not a
+  promise to never raise it.
 
 ## What it is (and is not)
 

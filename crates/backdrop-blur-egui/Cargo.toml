@@ -10,6 +10,12 @@ authors.workspace = true
 keywords.workspace = true
 categories.workspace = true
 
+# Build docs with both adapter paths so docs.rs shows the grab-pass API (GrabPassRenderer, frost),
+# not just the default own-loop path. Without this, the mainstream grab-pass path is invisible on
+# docs.rs (default-feature doc build = own-loop only).
+[package.metadata.docs.rs]
+all-features = true
+
 [dependencies]
 # Neutral spine — both the own-loop and grab-pass paths need these.
 backdrop-blur-core = { workspace = true }

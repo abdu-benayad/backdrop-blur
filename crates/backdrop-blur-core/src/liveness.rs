@@ -13,6 +13,11 @@ use std::time::Duration;
 pub enum RepaintPolicy {
     /// The backdrop is over still content (dialog, tooltip): grab once, never refresh. The
     /// default — cheapest, and correct whenever the content behind the surface is static.
+    ///
+    /// `Static` means the adapter does not *drive* repaints for this surface — **not** that the
+    /// surface stops compositing. If the host repaints for any other reason (input, animation
+    /// elsewhere, another surface's `Live`), the frost still re-grabs and re-composites that frame.
+    /// It is "don't request frames," not "don't paint."
     Static,
     /// The backdrop is over animating content: refresh every frame. Names an idle-power cost
     /// and is **required** for glass over moving content (otherwise the blur goes stale).

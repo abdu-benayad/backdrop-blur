@@ -10,7 +10,7 @@ use crate::geometry::Scale;
 /// **GPU application** of the resulting parameters (allocating the pyramid textures, binding the
 /// per-pass offset uniforms, the draws) lives in the backend; the GPU-free *policy* that
 /// produces them — the Gaussian sigma/taps and the dual-Kawase level/half-pixel math — lives in
-/// [`crate::algorithm`] (DESIGN §4.2, §15). **Reversal noted (glow IMPL §0c):** an earlier
+/// the crate's `algorithm` module (DESIGN §4.2, §15). **Reversal noted (glow IMPL §0c):** an earlier
 /// version of this paragraph said core "has no notion of levels — that is the wgpu crate's".
 /// That held while wgpu was the only backend; the glow backend needs the *same* level policy, so
 /// it was hoisted to core to keep the two backends from drifting. Core now owns the level math;
