@@ -22,6 +22,12 @@
 > `Result`, so `BlurError::ResourceCreation` is glow-only and `UnsupportedTarget` is the one
 > synchronous wgpu error; the own-loop renders egui **twice** (intermediate + target) rather than a
 > blit. MSRV is **1.92** (egui 0.34), not 1.85.
+>
+> **Post-v1 status (this doc is the v1 record):** `backdrop-blur-glow` + the egui grab-pass path
+> are **no longer deferred** — they shipped and are published (see `GLOW_IMPL.md`). Statements
+> below that call glow "deferred / not v1" or say there is "no `glow` pin" describe the v1
+> *increment*, not the current tree (the workspace now has a `glow` pin and a `backdrop-blur-glow`
+> member). The glow `TargetFormat` binds to `FramebufferSize`, not a GLES internal-format (§3).
 
 ## 0. What already exists (and what doesn't)
 
@@ -70,7 +76,7 @@ no extra method and no `()` in a load-bearing slot:
 | `Device` / `Queue` | `wgpu::Device` / `wgpu::Queue` | `glow::Context` / `()` (uploads via the context) |
 | `Encoder` | `wgpu::CommandEncoder` | `glow::Context` (immediate draw handle) |
 | `Framebuffer` / `SourceTexture` | `()` / `wgpu::TextureView` | `glow::Framebuffer` / `glow::Texture` |
-| `Target` / `TargetFormat` | `wgpu::TextureView` / `wgpu::TextureFormat` | `glow::Framebuffer` / GLES internal-format |
+| `Target` / `TargetFormat` | `wgpu::TextureView` / `wgpu::TextureFormat` | `glow::Framebuffer` / **`FramebufferSize`** (the composite viewport, **not** a color format — as built) |
 | `Prepared` (OWNED) | resolved offsets/tint/mask/rect + resource keys | **same payload** — glow's `prepare` *resolves* params into `Prepared`; it does **not** "upload" (immediate-mode GL binds uniforms at draw, in `record`) — K2 |
 | `grab_source(fb, region)` | default: hand the intermediate through | `copy_tex_image_2d` from `fb` for `region` → grab tex |
 | origin convention | top-left sample | **bottom-left grab** (`copy_tex_image_2d`); the flip lives **inside** glow's `grab_source` — confirms no extra trait method (K5) |
@@ -190,7 +196,7 @@ backdrop-blur/
     backdrop-blur-core/                   #![forbid(unsafe)]; deps: thiserror ONLY (no bytemuck — the GPU-uniform struct lives in -wgpu per S2)
       src/{lib,material,geometry,error,liveness,seam}.rs   types + the BackdropBlur trait + Region no-op predicate
     backdrop-blur-wgpu/                    #![forbid(unsafe)]; deps: core, wgpu, bytemuck; feat image-snapshots
-      src/{lib,cache}.rs                   WgpuBlur, impl BackdropBlur, PingPongKey, the #[repr(C)] GPU-uniform struct + layout test
+      src/{lib,cache,uniforms}.rs          WgpuBlur, impl BackdropBlur, PingPongKey; the #[repr(C)] GPU-uniform struct + layout test live in uniforms.rs (as built)
       src/shaders/{gaussian,downsample,upsample,composite}.wgsl   include_str! + create_shader_module
       tests/snapshot.rs                    lavapipe panel + analytic halo probe (feature-gated, --test-threads=1)
     backdrop-blur-egui/                    deps: core, backdrop-blur-wgpu, egui, egui-wgpu(default-features=false); feat own-loop

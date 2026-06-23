@@ -17,6 +17,12 @@
 > findings, all in the §4 seam shape and doc contradictions; topology survived). Pending
 > Abdu sign-off. The seam is cut at prepare/record joints here and is **not frozen** until
 > an IMPL-doc glow sketch confirms the associated types fit the divergent backend (§13).
+>
+> **As-built update (post-0.1.0):** the glow grab-pass backend and the egui grab-pass path
+> are **no longer deferred** — both shipped and are published on crates.io. References below
+> that mark glow / grab-pass as "DEFERRED past v1" describe the original v1 *increment plan*,
+> not the current state. The seam proved out against the divergent backend (see §4.4 / the
+> `seam.rs` "Gate verdict"); `BlurRequest` also gained a sixth field, `opacity` (§4.3).
 
 ---
 
@@ -155,6 +161,7 @@ the old §14 open list.
       pub strength:      BlurStrength,
       pub tint:          Tint,
       pub corner_radius: CornerRadius,
+      pub opacity:       Opacity,    // surface-global fade [0,1]; default 1.0 (added post-design)
   }
   ```
 
