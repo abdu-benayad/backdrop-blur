@@ -2,6 +2,7 @@
 name = "backdrop-blur-glow"
 version = "0.1.0"
 description = "glow (OpenGL 3.3 / GLES 3.0 / WebGL2) grab-pass backend for backdrop-blur: real frosted glass for eframe-on-glow and the cage kiosk — grab a region of the live framebuffer, blur it, composite the frosted surface back."
+readme = "README.md"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true

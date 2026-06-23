@@ -2,6 +2,7 @@
 name = "backdrop-blur-egui"
 version = "0.1.0"
 description = "egui adapter for backdrop-blur: frosted glass over two paths sharing one Surface vocabulary — own-loop (egui-wgpu, render to an intermediate and composite) and grab-pass (eframe-on-glow, grab the live framebuffer in a paint callback, blur, composite)."
+readme = "README.md"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
