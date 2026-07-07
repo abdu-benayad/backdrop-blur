@@ -16,7 +16,7 @@ use egui::{Align2, Color32, FontId, Pos2, Rect, Vec2, pos2, vec2};
 
 struct FrostApp {
     /// `None` if the backend could not be built (e.g. a context too old) — then the panel falls
-    /// back to a plain translucent fill so the app still runs.
+    /// back to a plain translucent fill so the app still runs, and the cause is printed to stderr.
     renderer: Option<GrabPassRenderer>,
     blur_radius: f32,
     panel: Rect,
@@ -24,10 +24,13 @@ struct FrostApp {
 
 impl FrostApp {
     fn new(cc: &eframe::CreationContext<'_>) -> Self {
-        let renderer = cc
-            .gl
-            .as_ref()
-            .and_then(|gl| GrabPassRenderer::new(gl).ok());
+        let renderer = cc.gl.as_ref().and_then(|gl| match GrabPassRenderer::new(gl) {
+            Ok(renderer) => Some(renderer),
+            Err(err) => {
+                eprintln!("backdrop-blur grab-pass unavailable, using the plain-fill fallback: {err}");
+                None
+            }
+        });
         Self {
             renderer,
             blur_radius: 24.0,
