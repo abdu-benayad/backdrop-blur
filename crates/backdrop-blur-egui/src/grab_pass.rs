@@ -119,6 +119,36 @@ impl Drop for FrostGuard<'_> {
     }
 }
 
+/// The frost callback's one fallible exit: commits the frost result's outcome to the guard and
+/// manages the once-per-episode warn latch — success clears the latch (the episode, if any,
+/// ended), the first failure of an episode warns and sets it, later failures stay silent. Pure
+/// control flow — no GL — so the episode semantics are unit-tested below.
+fn commit_frost_result(
+    result: Result<FrostEffect, BlurError>,
+    outcome_guard: &mut FrostGuard<'_>,
+    warned: &AtomicBool,
+) {
+    match result {
+        // Recovered (or never failed) — re-arm the once-per-episode failure warning below.
+        // Any `FrostEffect` re-arms (composited or clipped-empty), matching the pre-widening
+        // any-Ok behavior; the outcome still distinguishes the two for the host.
+        Ok(effect) => {
+            warned.store(false, Ordering::Relaxed);
+            outcome_guard.commit(FrostOutcome::from(effect));
+        }
+        // A paint callback cannot propagate an error; the frost is best-effort. Warn ONCE per
+        // failure episode (GLOW_DESIGN §7): under RepaintPolicy::Live this runs every frame,
+        // so an unthrottled warn floods a kiosk log. The format! runs only on the first bad
+        // frame.
+        Err(e) => {
+            outcome_guard.commit(FrostOutcome::Failed);
+            if !warned.swap(true, Ordering::Relaxed) {
+                log::warn!("backdrop-blur grab-pass frost failed: {e}");
+            }
+        }
+    }
+}
+
 /// Drives the grab-pass (eframe-on-glow) frosted-glass path: holds the glow backend behind a mutex
 /// (the paint callback is `Fn + Send + Sync`, so it cannot own `&mut`) and enqueues a paint callback
 /// per frosted [`Surface`].
@@ -269,25 +299,11 @@ impl GrabPassRenderer {
                 presence: surface.presence,
             };
             let target = current_draw_framebuffer(gl);
-            match guard.frost_region(gl, target, region, framebuffer_size, &request) {
-                // Recovered (or never failed) — re-arm the once-per-episode failure warning below.
-                // Any `FrostEffect` re-arms (composited or clipped-empty), matching the pre-widening
-                // any-Ok behavior; the outcome still distinguishes the two for the host.
-                Ok(effect) => {
-                    warned.store(false, Ordering::Relaxed);
-                    outcome_guard.commit(FrostOutcome::from(effect));
-                }
-                // A paint callback cannot propagate an error; the frost is best-effort. Warn ONCE per
-                // failure episode (GLOW_DESIGN §7): under RepaintPolicy::Live this runs every frame,
-                // so an unthrottled warn floods a kiosk log. The format! runs only on the first bad
-                // frame.
-                Err(e) => {
-                    outcome_guard.commit(FrostOutcome::Failed);
-                    if !warned.swap(true, Ordering::Relaxed) {
-                        log::warn!("backdrop-blur grab-pass frost failed: {e}");
-                    }
-                }
-            }
+            commit_frost_result(
+                guard.frost_region(gl, target, region, framebuffer_size, &request),
+                &mut outcome_guard,
+                &warned,
+            );
         });
 
         ui.painter().add(egui::PaintCallback {
@@ -441,6 +457,50 @@ mod tests {
         assert_eq!(
             FrostOutcome::from_raw(outcome.load(Ordering::Relaxed)),
             FrostOutcome::Composited
+        );
+    }
+
+    fn synthetic_failure() -> Result<FrostEffect, BlurError> {
+        Err(BlurError::UnsupportedContext {
+            detail: "synthetic".into(),
+        })
+    }
+
+    #[test]
+    fn commit_frost_result_warns_once_per_failure_episode() {
+        // Two consecutive failing frames (one armed guard per callback, as in the real flow):
+        // the latch is set by the first failure and stays set — the log fires once per episode.
+        let outcome = AtomicU8::new(FrostOutcome::DidNotFire as u8);
+        let warned = AtomicBool::new(false);
+
+        let mut guard = FrostGuard::arm(&outcome);
+        commit_frost_result(synthetic_failure(), &mut guard, &warned);
+        drop(guard);
+        assert!(warned.load(Ordering::Relaxed));
+
+        let mut guard = FrostGuard::arm(&outcome);
+        commit_frost_result(synthetic_failure(), &mut guard, &warned);
+        drop(guard);
+        assert!(warned.load(Ordering::Relaxed));
+        assert_eq!(
+            FrostOutcome::from_raw(outcome.load(Ordering::Relaxed)),
+            FrostOutcome::Failed
+        );
+    }
+
+    #[test]
+    fn commit_frost_result_clears_the_latch_on_success() {
+        // An ongoing failure episode (latch set): a success ends it — the latch clears (re-arming
+        // the warning for the next episode) and the outcome ratchets to Composited.
+        let outcome = AtomicU8::new(FrostOutcome::DidNotFire as u8);
+        let warned = AtomicBool::new(true);
+
+        let mut guard = FrostGuard::arm(&outcome);
+        commit_frost_result(Ok(FrostEffect::Composited), &mut guard, &warned);
+        assert!(!warned.load(Ordering::Relaxed));
+        assert_eq!(
+            outcome.load(Ordering::Relaxed),
+            FrostOutcome::Composited as u8
         );
     }
 }
