@@ -63,7 +63,10 @@ type PfnEglGetPlatformDisplayExt = unsafe extern "system" fn(
 
 /// A live, current, surfaceless GL context plus the EGL handles that own it. [`Deref`] yields the
 /// `glow::Context`. **The crate under test owns its own GL objects and must `destroy` them before
-/// this drops**; `Drop` here only tears down the EGL context/display.
+/// this drops**; `Drop` here only tears down the EGL context/display. **Do not install a GL debug
+/// callback through this context**: glow's native `Context` `Drop` then issues a real GL call
+/// (`glDebugMessageCallback(None)`) — and that `Drop` runs after this harness has already called
+/// `eglDestroyContext`, so it would issue GL against a destroyed context.
 pub struct HeadlessGl {
     egl: Egl,
     display: egl::Display,

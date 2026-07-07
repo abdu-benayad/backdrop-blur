@@ -259,7 +259,8 @@ fn gaussian_softens_a_hard_edge() {
 fn dual_kawase_preserves_a_flat_backdrop() {
     let mut gl = headless_gl();
     let mut blur = GlowBlur::new(&gl).expect("new");
-    // sRGB 0.5 (≈188) flat. radius 30 (≥16) takes the dual-Kawase path; energy-preserving down
+    // Flat 0.5 gray (the plain RGBA8 scene FBO stores it as byte ≈128, no sRGB encode — see the
+    // readback note below). radius 30 (≥16) takes the dual-Kawase path; energy-preserving down
     // (÷8) + up (÷12) must leave the flat gray unchanged — a wrong-weight kernel shifts brightness.
     let mid = 0.5_f32;
     let scene = flat_backdrop(&gl, [mid, mid, mid, 1.0]);

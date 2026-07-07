@@ -239,6 +239,14 @@ impl GlowBlur {
         framebuffer_size: crate::FramebufferSize,
         request: &BlurRequest,
     ) -> Result<FrostEffect, BlurError> {
+        // A zero-area target is a guaranteed no-op: `prepare` would refuse it anyway (its own
+        // guard stays — the defense is total), but the grab — a real glCopyTexSubImage plus a
+        // possible grab-texture realloc — should not run for it. Only a caller assembling its own
+        // `BlurRequest` can reach this: the egui adapter derives `region` and `target_rect` from
+        // one rect, so its empty targets never arrive here.
+        if request.target_rect.is_empty() {
+            return Ok(FrostEffect::ClippedEmpty);
+        }
         let source = self.grab_source(gl, &(), &target, region)?;
         match self.prepare(gl, &(), &source, framebuffer_size, request)? {
             Some(prepared) => {

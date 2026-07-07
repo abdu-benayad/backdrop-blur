@@ -311,6 +311,16 @@ mod tests {
     }
 
     #[test]
+    fn classify_rejects_desktop_gl_3_2() {
+        // Desktop is the only flavor whose minimum has a nonzero MINOR (3.3), so this is the one
+        // case that pins the minor half of the gate: a comparison that ignores the minor, or a
+        // gate misplaced at (3, 2), accepts this string and fails here.
+        let err = classify("3.2.0 Mesa 20.0", &[], 0)
+            .expect_err("desktop GL 3.2 is below the 3.3 minimum");
+        assert!(matches!(err, BlurError::UnsupportedContext { .. }));
+    }
+
+    #[test]
     fn classify_rejects_gles_common_profile_1_1() {
         // "OpenGL ES-CM 1.1" still contains "OpenGL ES" (embedded flavor) and 1.1 is extractable,
         // so this is a rejection case, not an ungated tolerance case.

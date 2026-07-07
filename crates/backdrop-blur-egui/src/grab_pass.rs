@@ -121,30 +121,32 @@ impl Drop for FrostGuard<'_> {
 
 /// The frost callback's one fallible exit: commits the frost result's outcome to the guard and
 /// manages the once-per-episode warn latch — success clears the latch (the episode, if any,
-/// ended), the first failure of an episode warns and sets it, later failures stay silent. Pure
-/// control flow — no GL — so the episode semantics are unit-tested below.
+/// ended), the first failure of an episode sets it, later failures stay silent. The warn decision
+/// is the RETURN VALUE, not a side effect: `Some(error)` means "first failure of an episode —
+/// warn with it" (the callback logs it), `None` means stay silent (success, or a repeat failure
+/// inside an episode). Pure control flow — no GL, no logging — so the episode contract is
+/// unit-tested below against the returned decision itself.
 fn commit_frost_result(
     result: Result<FrostEffect, BlurError>,
     outcome_guard: &mut FrostGuard<'_>,
     warned: &AtomicBool,
-) {
+) -> Option<BlurError> {
     match result {
-        // Recovered (or never failed) — re-arm the once-per-episode failure warning below.
+        // Recovered (or never failed) — re-arm the once-per-episode failure warning.
         // Any `FrostEffect` re-arms (composited or clipped-empty), matching the pre-widening
         // any-Ok behavior; the outcome still distinguishes the two for the host.
         Ok(effect) => {
             warned.store(false, Ordering::Relaxed);
             outcome_guard.commit(FrostOutcome::from(effect));
+            None
         }
         // A paint callback cannot propagate an error; the frost is best-effort. Warn ONCE per
         // failure episode (GLOW_DESIGN §7): under RepaintPolicy::Live this runs every frame,
-        // so an unthrottled warn floods a kiosk log. The format! runs only on the first bad
-        // frame.
+        // so an unthrottled warn floods a kiosk log. Only the first bad frame of an episode
+        // surfaces the error to the caller's `log::warn!`.
         Err(e) => {
             outcome_guard.commit(FrostOutcome::Failed);
-            if !warned.swap(true, Ordering::Relaxed) {
-                log::warn!("backdrop-blur grab-pass frost failed: {e}");
-            }
+            (!warned.swap(true, Ordering::Relaxed)).then_some(e)
         }
     }
 }
@@ -315,11 +317,13 @@ impl GrabPassRenderer {
                 presence: surface.presence,
             };
             let target = current_draw_framebuffer(gl);
-            commit_frost_result(
+            if let Some(e) = commit_frost_result(
                 guard.frost_region(gl, target, region, framebuffer_size, &request),
                 &mut outcome_guard,
                 &warned,
-            );
+            ) {
+                log::warn!("backdrop-blur grab-pass frost failed: {e}");
+            }
         });
 
         ui.painter().add(egui::PaintCallback {
@@ -484,39 +488,68 @@ mod tests {
 
     #[test]
     fn commit_frost_result_warns_once_per_failure_episode() {
-        // Two consecutive failing frames (one armed guard per callback, as in the real flow):
-        // the latch is set by the first failure and stays set — the log fires once per episode.
+        // The full episode contract, asserted on the RETURNED warn decision (a fresh armed guard
+        // per call, as in the real flow): fail → fail → ok → fail must decide Some, None, None,
+        // Some — the first failure of each episode warns, the repeat stays silent, and a success
+        // re-arms the latch for the next episode. Asserting the decision itself (not just the
+        // latch) is what makes an inverted warn condition fail this test.
         let outcome = AtomicU8::new(FrostOutcome::DidNotFire as u8);
         let warned = AtomicBool::new(false);
 
         let mut guard = FrostGuard::arm(&outcome);
-        commit_frost_result(synthetic_failure(), &mut guard, &warned);
+        assert!(commit_frost_result(synthetic_failure(), &mut guard, &warned).is_some());
         drop(guard);
         assert!(warned.load(Ordering::Relaxed));
 
         let mut guard = FrostGuard::arm(&outcome);
-        commit_frost_result(synthetic_failure(), &mut guard, &warned);
+        assert!(commit_frost_result(synthetic_failure(), &mut guard, &warned).is_none());
         drop(guard);
         assert!(warned.load(Ordering::Relaxed));
         assert_eq!(
             FrostOutcome::from_raw(outcome.load(Ordering::Relaxed)),
             FrostOutcome::Failed
         );
+
+        let mut guard = FrostGuard::arm(&outcome);
+        assert!(commit_frost_result(Ok(FrostEffect::Composited), &mut guard, &warned).is_none());
+        drop(guard);
+        assert!(!warned.load(Ordering::Relaxed));
+
+        let mut guard = FrostGuard::arm(&outcome);
+        assert!(commit_frost_result(synthetic_failure(), &mut guard, &warned).is_some());
+        drop(guard);
+        assert!(warned.load(Ordering::Relaxed));
     }
 
     #[test]
     fn commit_frost_result_clears_the_latch_on_success() {
         // An ongoing failure episode (latch set): a success ends it — the latch clears (re-arming
-        // the warning for the next episode) and the outcome ratchets to Composited.
+        // the warning for the next episode), the decision is silent (`None` — success never
+        // warns), and the outcome ratchets to Composited.
         let outcome = AtomicU8::new(FrostOutcome::DidNotFire as u8);
         let warned = AtomicBool::new(true);
 
         let mut guard = FrostGuard::arm(&outcome);
-        commit_frost_result(Ok(FrostEffect::Composited), &mut guard, &warned);
+        assert!(commit_frost_result(Ok(FrostEffect::Composited), &mut guard, &warned).is_none());
         assert!(!warned.load(Ordering::Relaxed));
         assert_eq!(
             outcome.load(Ordering::Relaxed),
             FrostOutcome::Composited as u8
+        );
+    }
+
+    #[test]
+    fn commit_frost_result_routes_a_clipped_empty_effect() {
+        // The Ok arm must route the ACTUAL effect, not hard-code Composited: an
+        // `Ok(FrostEffect::ClippedEmpty)` commit leaves the atomic at ClippedEmpty.
+        let outcome = AtomicU8::new(FrostOutcome::DidNotFire as u8);
+        let warned = AtomicBool::new(false);
+
+        let mut guard = FrostGuard::arm(&outcome);
+        assert!(commit_frost_result(Ok(FrostEffect::ClippedEmpty), &mut guard, &warned).is_none());
+        assert_eq!(
+            outcome.load(Ordering::Relaxed),
+            FrostOutcome::ClippedEmpty as u8
         );
     }
 }

@@ -107,8 +107,8 @@ fn region(origin: [u32; 2], size: [u32; 2]) -> Region {
     }
 }
 
-/// A `DIM×DIM` Rgba8Unorm texture filled with a single opaque gray.
-fn flat_backdrop(device: &wgpu::Device, queue: &wgpu::Queue, gray: u8) -> wgpu::Texture {
+/// A `DIM×DIM` Rgba8Unorm texture filled with a single opaque color.
+fn flat_backdrop(device: &wgpu::Device, queue: &wgpu::Queue, rgb: [u8; 3]) -> wgpu::Texture {
     let texture = device.create_texture(&wgpu::TextureDescriptor {
         label: Some("flat backdrop"),
         size: wgpu::Extent3d {
@@ -125,11 +125,9 @@ fn flat_backdrop(device: &wgpu::Device, queue: &wgpu::Queue, gray: u8) -> wgpu::
             | wgpu::TextureUsages::COPY_DST,
         view_formats: &[],
     });
-    let pixels = vec![gray; (DIM * DIM * 4) as usize]
-        .iter()
-        .enumerate()
-        .map(|(i, _)| if i % 4 == 3 { 255 } else { gray })
-        .collect::<Vec<u8>>();
+    let pixels: Vec<u8> = (0..(DIM * DIM) as usize)
+        .flat_map(|_| [rgb[0], rgb[1], rgb[2], 255])
+        .collect();
     queue.write_texture(
         wgpu::TexelCopyTextureInfo {
             texture: &texture,
@@ -423,17 +421,20 @@ fn frosted_panel_blurs_the_backdrop_inside_the_masked_rect() {
 
 /// Dark-point oracle for the composite's linear→sRGB encode **exponent** — the assertion the
 /// near-white check in `frosted_panel_blurs_the_backdrop_inside_the_masked_rect` cannot provide.
-/// The same red backdrop (byte 255 → linear 1.0 under any power law, so the decode contributes
+/// A flat red backdrop (byte 255 → linear 1.0 under any power law, so the decode contributes
 /// nothing) through an 80%-black tint film yields linear 0.2 red, where the encode curve is ~5×
 /// steeper than at 0.85: a 2.2-for-2.4 exponent substitution lands ≈115 vs the canonical ≈124
 /// (Δ≈9), outside the ±5 band — at 0.85 the same substitution is Δ≈1 and invisible. The
 /// near-white assertion pins the encode's mix-branch/clamp instead; together the two operating
 /// points cover the encode (mirrors the glow oracle in `blur_tests.rs`
-/// `composite_encodes_linear_through_the_glsl_at_two_operating_points`).
+/// `composite_encodes_linear_through_the_glsl_at_two_operating_points`, which likewise probes a
+/// flat scene).
 #[test]
 fn composite_encodes_the_dark_point_to_pin_the_exponent() {
     let (device, queue) = software_device();
-    let backdrop = backdrop_texture(&device, &queue);
+    // Flat red scene so the probe has no seam 30px away: on the red/blue backdrop the blur would
+    // bleed a little seam blue toward the probe, muddying what must be a pure encode measurement.
+    let backdrop = flat_backdrop(&device, &queue, [255, 0, 0]);
     let out = frost_and_read(
         &device,
         &queue,
@@ -443,18 +444,15 @@ fn composite_encodes_the_dark_point_to_pin_the_exponent() {
         1.0,
     );
 
-    // Same interior pixel as the near-white assertion: fully covered, 30px from the red/blue seam
-    // and well inside the panel edges, so the blur leaves it uniform red and only the tint film
-    // and the encode set the byte. Measured 124 on lavapipe (exactly the canonical encode of 0.2);
-    // ±5 keeps the 2.2-substitution's ≈115 outside the band.
+    // Interior pixel, fully covered and well inside the panel edges: the flat scene leaves it
+    // uniform red, so only the tint film and the encode set the byte. Measured 124 on lavapipe
+    // (exactly the canonical encode of 0.2); ±5 keeps the 2.2-substitution's ≈115 outside the
+    // band. One combined assert so a failure is attributable to a specific channel.
     let [r, g, b, _] = pixel(&out, 70, 100);
     assert!(
-        (119..=129).contains(&r),
-        "encode of linear 0.2 must read ≈124 (the exponent oracle: 2.2 lands ≈115), got r={r}"
-    );
-    assert!(
-        g <= 6 && b <= 6,
-        "the black film cannot introduce green/blue, got g={g} b={b}"
+        (119..=129).contains(&r) && g <= 6 && b <= 6,
+        "encode of linear 0.2 must read ≈124 (the exponent oracle: 2.2 lands ≈115) with no \
+         green/blue from the black film, got r={r} g={g} b={b}"
     );
 }
 
@@ -465,7 +463,7 @@ fn dual_kawase_preserves_energy_on_a_flat_backdrop() {
     // unchanged — a wrong-weight kernel that doesn't sum to 1 shifts the brightness and fails here.
     // This is the real guard the "non-trivial output" readback cannot give (IMPL §2b′).
     let (device, queue) = software_device();
-    let gray = flat_backdrop(&device, &queue, 128);
+    let gray = flat_backdrop(&device, &queue, [128, 128, 128]);
     let out = frost_and_read(
         &device,
         &queue,
@@ -561,7 +559,7 @@ fn translucent_panel_edge_has_no_halo() {
     let (device, queue) = software_device();
 
     // Bright frost over black — the white-halo (overshoot) direction.
-    let black = flat_backdrop(&device, &queue, 0);
+    let black = flat_backdrop(&device, &queue, [0, 0, 0]);
     let out = frost_and_read(
         &device,
         &queue,
@@ -573,7 +571,7 @@ fn translucent_panel_edge_has_no_halo() {
     assert_no_edge_halo(&out, 30, 90);
 
     // Dark frost over white — the dark-fringe (undershoot) direction.
-    let white = flat_backdrop(&device, &queue, 255);
+    let white = flat_backdrop(&device, &queue, [255, 255, 255]);
     let out = frost_and_read(
         &device,
         &queue,
@@ -642,7 +640,7 @@ fn presence_fades_the_surface_linearly_toward_the_destination() {
 #[test]
 fn scratch_cache_evicts_old_sizes_instead_of_leaking() {
     let (device, queue) = software_device();
-    let backdrop = flat_backdrop(&device, &queue, 128);
+    let backdrop = flat_backdrop(&device, &queue, [128, 128, 128]);
     let source = SourceView {
         view: backdrop.create_view(&wgpu::TextureViewDescriptor::default()),
         size: [DIM, DIM],
@@ -690,7 +688,7 @@ fn scratch_cache_evicts_old_sizes_instead_of_leaking() {
 #[test]
 fn prepare_is_a_no_op_for_a_zero_area_target_rect() {
     let (device, queue) = software_device();
-    let backdrop = flat_backdrop(&device, &queue, 128);
+    let backdrop = flat_backdrop(&device, &queue, [128, 128, 128]);
     let source = SourceView {
         view: backdrop.create_view(&wgpu::TextureViewDescriptor::default()),
         size: [DIM, DIM],
