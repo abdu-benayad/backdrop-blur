@@ -99,6 +99,11 @@ pub(crate) fn draw(
     // here — the native harness/host is desktop GL; the enable is not per-FBO, so the read does not
     // depend on which FBO is bound); on web the wasm path must set encode=1 without this query
     // (FRAMEBUFFER_SRGB is not a WebGL2 enum), handled in the web cfg branch (none built here).
+    // The hardware-auto-encode branch — taken when `FRAMEBUFFER_SRGB` is enabled, so the shader
+    // skips its own encode and the hardware converts on write — is unreachable by the current test
+    // harness (plain RGBA8 FBOs, no `glEnable(GL_FRAMEBUFFER_SRGB)` anywhere) and is deliberately
+    // left unverified until standing findings G1/G2 settle its semantics (G1: no real wasm cfg
+    // branch exists; G2: the global enable is a proxy for attachment sRGB-capability).
     // Every uniform location comes from this program; a `None` location is a documented no-op (an
     // optimizer may drop an unused uniform), so missing-location handling is not a fault. The
     // viewport/scissor/blend state the caller saved is restored by the caller after this returns.

@@ -281,7 +281,7 @@ fn dual_kawase_preserves_a_flat_backdrop() {
     let px = read_texture_rgba8(&gl, target.tex, 64, 64);
     for (ch, &v) in px.iter().take(3).enumerate() {
         assert!(
-            (110..=146).contains(&v),
+            (120..=136).contains(&v),
             "dual-Kawase must preserve the flat backdrop's brightness, channel {ch} = {v}"
         );
     }
@@ -599,6 +599,89 @@ fn composite_leaves_content_outside_the_panel_untouched() {
     blur.destroy(&gl);
     free_fbo(&gl, scene.fbo, scene.tex);
     free_fbo(&gl, target.fbo, target.tex);
+}
+
+/// Two-operating-point oracle for the composite's **encode** call site (`encode_srgb` in
+/// `composite.frag`): a pure-red backdrop (byte 255 → decodes to linear 1.0 under any power law — a
+/// fixed point, so the decode site contributes nothing) is attenuated by a black tint film to a
+/// known linear value, and the readback byte must match the canonical linear→sRGB encode of it.
+///
+/// What this proves / does not prove:
+/// - **Proves** the encode's mix-branch/clamp at 0.85 (Point A — a swapped mix argument order reads
+///   255) and the encode's exponent at 0.2 (Point B — the curve is ~5× steeper there, so a
+///   2.2-for-2.4 substitution lands ≈115 vs the canonical ≈124, outside the band; at 0.85 the same
+///   substitution measures 236 vs 237, invisible).
+/// - **Does not prove** the decode site's exponent: it is structurally near-unobservable through
+///   byte round-trips (byte 255 decodes to 1.0 under any power law, and decode∘encode is an
+///   inverse pair whose flatness bounds a single-site exponent bug at ~2 bytes at every operating
+///   point). The decode BRANCH-SWAP is already caught by the energy test above (a swapped decode
+///   turns mid-gray 128 into ~55, far outside its band).
+#[test]
+fn composite_encodes_linear_through_the_glsl_at_two_operating_points() {
+    let mut gl = headless_gl();
+    let mut blur = GlowBlur::new(&gl).expect("new");
+    // Red backdrop: byte 255 → linear 1.0 exactly, so the tint film alone sets the linear output.
+    let scene = flat_backdrop(&gl, [1.0, 0.0, 0.0, 1.0]);
+    let p = panel([24, 24], [80, 80]);
+
+    // Point A (near-white): black film, alpha 0.15 → linear 0.85 red → canonical encode byte ≈237.
+    // Pins the encode's mix-branch/clamp; does NOT pin the exponent (the curve is flat at 0.85 — a
+    // 2.2-for-2.4 substitution measures 236 vs 237 here).
+    let ta = frost(
+        &mut gl,
+        &mut blur,
+        &scene,
+        p,
+        30.0,
+        0.0,
+        Tint::new(LinearRgba::new(0.0, 0.0, 0.0, 0.15)),
+        [0.0, 0.0, 0.0, 1.0],
+        1.0,
+    );
+    let a = read_texture_rgba8(&gl, ta.tex, 64, 64);
+
+    // Point B (dark): black film, alpha 0.8 → linear 0.2 → canonical encode byte ≈124. This is the
+    // exponent oracle: the curve is ~5× steeper at 0.2, so a 2.2 substitution lands ≈115 (Δ≈9),
+    // outside the band.
+    let tb = frost(
+        &mut gl,
+        &mut blur,
+        &scene,
+        p,
+        30.0,
+        0.0,
+        Tint::new(LinearRgba::new(0.0, 0.0, 0.0, 0.8)),
+        [0.0, 0.0, 0.0, 1.0],
+        1.0,
+    );
+    let b = read_texture_rgba8(&gl, tb.tex, 64, 64);
+
+    // Point A: measured 237 on this harness (exactly the canonical encode of 0.85).
+    assert!(
+        (230..=244).contains(&a[0]),
+        "encode of linear 0.85 must read ≈237 (a swapped mix reads 255), got r={}",
+        a[0]
+    );
+    assert!(
+        a[1] <= 6 && a[2] <= 6,
+        "the black film cannot introduce green/blue, got {a:?}"
+    );
+    // Point B: measured 124 on this harness (exactly the canonical encode of 0.2); ±5 keeps the
+    // 2.2-substitution's ≈115 outside the band.
+    assert!(
+        (119..=129).contains(&b[0]),
+        "encode of linear 0.2 must read ≈124 (the exponent oracle: 2.2 lands ≈115), got r={}",
+        b[0]
+    );
+    assert!(
+        b[1] <= 6 && b[2] <= 6,
+        "the black film cannot introduce green/blue, got {b:?}"
+    );
+
+    blur.destroy(&gl);
+    free_fbo(&gl, scene.fbo, scene.tex);
+    free_fbo(&gl, ta.fbo, ta.tex);
+    free_fbo(&gl, tb.fbo, tb.tex);
 }
 
 // --- 2g: end-to-end frost + GL-state-unchanged across record ---
