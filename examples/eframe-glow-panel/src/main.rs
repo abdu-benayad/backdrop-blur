@@ -6,7 +6,8 @@
 //!
 //! Layout per frame: (1) paint a vivid, sharp-edged backdrop (so the blur is obvious), (2) frost a
 //! centered panel (the blur source is the backdrop directly behind it), (3) paint the panel's
-//! foreground text over the frosted background. A slider drives the blur radius live.
+//! foreground text over the frosted background. The backdrop animates (drifting circles), so the
+//! panel demonstrates [`RepaintPolicy::Live`]; a slider drives the blur radius.
 
 use backdrop_blur_egui::{
     BlurRadius, CornerRadius, GrabPassRenderer, LinearRgba, Presence, RepaintPolicy, Surface, Tint,
@@ -38,9 +39,10 @@ impl FrostApp {
         }
     }
 
-    /// A vivid, sharp-edged backdrop: vertical color bands plus two hard-contrast circles, so the
-    /// blur visibly softens edges.
-    fn paint_backdrop(painter: &egui::Painter, rect: Rect) {
+    /// A vivid, sharp-edged backdrop: vertical color bands plus two hard-contrast circles drifting
+    /// on slow sine paths (`t` is seconds), so the blur visibly softens edges AND visibly tracks
+    /// moving content — this animation is what makes [`RepaintPolicy::Live`] the right policy.
+    fn paint_backdrop(painter: &egui::Painter, rect: Rect, t: f32) {
         const BANDS: [Color32; 4] = [
             Color32::from_rgb(231, 76, 60),
             Color32::from_rgb(46, 204, 113),
@@ -56,8 +58,14 @@ impl FrostApp {
             );
             painter.rect_filled(band, 0.0, BANDS[i as usize % BANDS.len()]);
         }
-        painter.circle_filled(rect.center(), 64.0, Color32::WHITE);
-        painter.circle_filled(rect.left_top() + Vec2::splat(90.0), 44.0, Color32::BLACK);
+        let white_drift = vec2((t * 0.5).sin() * 60.0, (t * 0.7).cos() * 40.0);
+        let black_drift = vec2((t * 0.9 + 1.3).cos() * 50.0, (t * 0.4 + 2.1).sin() * 45.0);
+        painter.circle_filled(rect.center() + white_drift, 64.0, Color32::WHITE);
+        painter.circle_filled(
+            rect.left_top() + Vec2::splat(90.0) + black_drift,
+            44.0,
+            Color32::BLACK,
+        );
     }
 }
 
@@ -67,7 +75,7 @@ impl eframe::App for FrostApp {
         let full = ui.max_rect();
 
         // 1) The colorful backdrop FIRST (lower z = the grabbed blur source).
-        Self::paint_backdrop(ui.painter(), full);
+        Self::paint_backdrop(ui.painter(), full, ui.input(|i| i.time) as f32);
 
         // A live blur-radius slider (drawn over the backdrop, top-left, clear of the panel).
         ui.add(egui::Slider::new(&mut self.blur_radius, 0.0..=64.0).text("blur radius"));
@@ -83,7 +91,9 @@ impl eframe::App for FrostApp {
                     tint: Tint::new(LinearRgba::new(1.0, 1.0, 1.0, 0.10)),
                     corner_radius: CornerRadius::new(18.0),
                     presence: Presence::default(),
-                    // The slider animates the backdrop, so keep it fresh.
+                    // Live because the backdrop BEHIND the glass animates — the grab must re-run
+                    // every frame. With a static backdrop this would be RepaintPolicy::Static:
+                    // interaction repaints (the slider) keep the UI responsive on their own.
                     repaint: RepaintPolicy::Live,
                 },
             );
