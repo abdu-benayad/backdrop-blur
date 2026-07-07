@@ -6,7 +6,9 @@ glass / vibrancy) as a reusable, toolkit-agnostic GPU capability for Rust GUIs.
 
 It is the path the own-loop/wgpu backend never served: real frosted glass for an `eframe`-on-glow app
 and the `cage` Wayland kiosk, where the host owns the GL loop and the blur must **grab** a region of
-the live framebuffer rather than receive a ready-made intermediate.
+the live framebuffer rather than receive a ready-made intermediate. The version triple is a
+construction-time contract: `GlowBlur::new` refuses an older context with
+`BlurError::UnsupportedContext`.
 
 ![Frosted glass dialog, dark theme](https://raw.githubusercontent.com/abdu-benayad/backdrop-blur/main/docs/screenshots/glass-dialog-dark.png)
 

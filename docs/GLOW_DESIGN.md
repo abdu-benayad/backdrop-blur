@@ -114,7 +114,7 @@ New types, all in `backdrop-blur-glow`:
 
 A **structural sibling** of `OwnLoopRenderer`, not a copy.
 
-- **`GrabPassRenderer::new(gl: &Arc<glow::Context>) -> Result<Self, BlurError>`** — probes `GlProfile`, builds `GlowBlur`, refuses too-old contexts (`UnsupportedContext`). Holds `GlowBlur` behind the `Arc<Mutex<…>>` bound-satisfier (§6).
+- **`GrabPassRenderer::new(gl: &Arc<glow::Context>) -> Result<Self, BlurError>`** — probes `GlProfile`, builds `GlowBlur`, refuses too-old contexts (`UnsupportedContext`). Holds `GlowBlur` behind the `Arc<Mutex<…>>` bound-satisfier (§6). *(Shipped in `profile::classify`: the gate reads `GL_VERSION` and enforces desktop GL 3.3 / GLES 3.0 / WebGL 2.0 minimums. Deliberate tolerance: a spec-violating string whose flavor is recognizable but whose version number does not parse proceeds ungated under the flavor-correct dialect — refusing an exotic driver that may work would be a regression, so that residual's failure mode stays the old one, a later shader-compile error.)*
 - **`frost(&self, ui: &mut egui::Ui, surface: Surface)`** — resolves the orientation-free parts of `surface`; drives repaint (below); and enqueues an `egui::PaintCallback` wrapping an `egui_glow::CallbackFn` that captures an `Arc` clone of `GlowBlur` and the surface. The callback computes the GL-origin `Region`/`BlurRequest` from `info.viewport_in_pixels()` and runs the §2.3 sequence.
 
 **The shared spine must be hoisted, and the own-loop-only parts named.** v1's `Surface`, `Surface::request`, `RepaintPolicy`, `composite_surfaces`, `SeamContext`, `strongest_repaint` live in the **wgpu-gated `own_loop` module**; a `grab_pass` module cannot reach them and they vanish when wgpu is absent. So:
@@ -197,7 +197,7 @@ The first `unsafe` crate in the project, isolated hard:
 | Scenario | Handling |
 |---|---|
 | `cc.gl == None` (consumer on eframe's default wgpu renderer) | `GrabPassRenderer` not constructible; consumer draws flat. Documented precondition (§2). |
-| Context too old (WebGL1 / not GLES3-capable) | `GrabPassRenderer::new` → `BlurError::UnsupportedContext`; flat fallback. |
+| Context too old (WebGL1 / not GLES3-capable) | `GrabPassRenderer::new` → `BlurError::UnsupportedContext`; flat fallback. *(Shipped as a `GL_VERSION` gate — desktop GL < 3.3, GLES < 3.0, and WebGL < 2 all refuse, not only the WebGL1/GLES2 cases named here; a recognizable flavor with an unparseable version number proceeds ungated by design, §7.)* |
 | `EXT_color_buffer_float` absent (web) | Degrade the *scratch* to sRGB-RGBA8 + logged warning (§9). Not an error. |
 | Default framebuffer multisampled | Blit-resolve; if impossible, flat fallback for that frame. |
 | Region clamps to empty (offscreen / scrolled out / zero-area) | `prepare` → `Ok(None)` → no-op, reported as `FrostOutcome::ClippedEmpty`; egui untouched; never mistaken for a missing callback. |

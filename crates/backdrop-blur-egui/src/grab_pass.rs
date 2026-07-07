@@ -145,8 +145,8 @@ pub struct GrabPassRenderer {
 
 impl GrabPassRenderer {
     /// Build the backend against the host's shared GL context (probe its capabilities, compile the
-    /// programs). Returns [`BlurError::UnsupportedContext`] if the context is too old for the
-    /// backend (raised inside [`GlowBlur::new`]).
+    /// programs). Returns [`BlurError::UnsupportedContext`] if the context is below the backend's
+    /// minimums — desktop GL 3.3, GLES 3.0, or WebGL 2.0 (raised inside [`GlowBlur::new`]).
     ///
     /// [`BlurError::UnsupportedContext`]: backdrop_blur_core::BlurError::UnsupportedContext
     pub fn new(gl: &Arc<glow::Context>) -> Result<Self, BlurError> {
