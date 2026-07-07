@@ -66,7 +66,7 @@ pub fn current_draw_framebuffer(gl: &glow::Context) -> Option<glow::Framebuffer>
 }
 
 /// The full draw-target size in physical pixels — the composite viewport (`glViewport(0,0,fb_w,
-/// fb_h)`), passed to [`BackdropBlur::prepare`] as the glow backend's `TargetFormat`. The composite
+/// fb_h)`), passed to [`BackdropBlur::prepare`] as the glow backend's `TargetSpec`. The composite
 /// needs it because the AA band outside the panel is only generated under a full-framebuffer
 /// `gl_FragCoord` (DESIGN §10), and the grabbed texture alone cannot tell the backend the screen
 /// size. Making it a **required** `prepare` input (rather than a field on [`GrabSource`] the adapter
@@ -79,7 +79,7 @@ pub struct FramebufferSize(pub [u32; 2]);
 
 /// The grab-pass source the glow backend's [`BackdropBlur::prepare`] consumes: just the grabbed
 /// backdrop texture. The full framebuffer size is **not** carried here — it is a required `prepare`
-/// input ([`FramebufferSize`], the backend's `TargetFormat`) the egui adapter supplies from the true
+/// input ([`FramebufferSize`], the backend's `TargetSpec`) the egui adapter supplies from the true
 /// screen size, so a missing screen size is a compile error rather than a fabricated-then-overridden
 /// field. Mirrors wgpu's `SourceView`, minus the size (which wgpu folds into the view).
 ///

@@ -27,7 +27,7 @@
 > are **no longer deferred** — they shipped and are published (see `GLOW_IMPL.md`). Statements
 > below that call glow "deferred / not v1" or say there is "no `glow` pin" describe the v1
 > *increment*, not the current tree (the workspace now has a `glow` pin and a `backdrop-blur-glow`
-> member). The glow `TargetFormat` binds to `FramebufferSize`, not a GLES internal-format (§3).
+> member). The glow `TargetSpec` binds to `FramebufferSize`, not a GLES internal-format (§3).
 
 ## 0. What already exists (and what doesn't)
 
@@ -76,7 +76,7 @@ no extra method and no `()` in a load-bearing slot:
 | `Device` / `Queue` | `wgpu::Device` / `wgpu::Queue` | `glow::Context` / `()` (uploads via the context) |
 | `Encoder` | `wgpu::CommandEncoder` | `glow::Context` (immediate draw handle) |
 | `Framebuffer` / `SourceTexture` | `()` / `wgpu::TextureView` | `glow::Framebuffer` / `glow::Texture` |
-| `Target` / `TargetFormat` | `wgpu::TextureView` / `wgpu::TextureFormat` | `glow::Framebuffer` / **`FramebufferSize`** (the composite viewport, **not** a color format — as built) |
+| `Target` / `TargetSpec` | `wgpu::TextureView` / `wgpu::TextureFormat` | `glow::Framebuffer` / **`FramebufferSize`** (the composite viewport, **not** a color format — as built) |
 | `Prepared` (OWNED) | resolved offsets/tint/mask/rect + resource keys | **same payload** — glow's `prepare` *resolves* params into `Prepared`; it does **not** "upload" (immediate-mode GL binds uniforms at draw, in `record`) — K2 |
 | `grab_source(fb, region)` | default: hand the intermediate through | `copy_tex_image_2d` from `fb` for `region` → grab tex |
 | origin convention | top-left sample | **bottom-left grab** (`copy_tex_image_2d`); the flip lives **inside** glow's `grab_source` — confirms no extra trait method (K5) |
@@ -119,7 +119,7 @@ Record the sketch + decision in core's module docs. (Expectation: it fits — th
 ### Step 2 — `backdrop-blur-wgpu` (`WgpuBlur`)
 
 2a. **Crate + skeleton** (fold into 2b if a bodiless commit would trip clippy — S5/C4). `#![forbid(unsafe_code)]`,
-   deps `core` + `wgpu` + `bytemuck` (derives only). `WgpuBlur::new(&Device)` — **no `target_format` arg**
+   deps `core` + `wgpu` + `bytemuck` (derives only). `WgpuBlur::new(&Device)` — **no `target_spec` arg**
    (format is per-`prepare`, M3). `impl BackdropBlur` with `todo!()` bodies; unused params `_`-prefixed,
    not-yet-read fields carry the repo's self-clearing `#[expect(dead_code, reason = …)]`. *Green:* the §8
    default tier (clippy `-D warnings` included — no red from the skeleton).
@@ -144,7 +144,7 @@ Record the sketch + decision in core's module docs. (Expectation: it fits — th
 2c. **Composite.** `composite.wgsl`: sample the blurred chain, evaluate the rounded-rect SDF from
    `ResolvedMask`, apply `Tint`, **re-encode to the target's color space**, blend in. The **alpha
    convention (premult vs straight) is a shader switch (define/uniform), defaulted but not frozen** (S3) —
-   2d *selects* it without a 2c rewrite. The **composite pipeline is keyed by `TargetFormat`** (M8); the
+   2d *selects* it without a 2c rewrite. The **composite pipeline is keyed by `TargetSpec`** (M8); the
    down/up pipelines stay fixed-scratch. Handle the sRGB target rule (`add_srgb_suffix` / `view_formats`).
    `BlurError::UnsupportedTarget` is an explicit allowlist, **separate** from wgpu's must-match-format
    validation. *Green:* gated tier — composites into a `Target` distinct from `source` (`source != target`).

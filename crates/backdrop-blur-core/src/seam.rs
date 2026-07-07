@@ -27,10 +27,10 @@
 //! (`Device`/`Encoder` → `glow::Context`, `SourceTexture` → the grab source, `Target` →
 //! `Option<glow::Framebuffer>` — the live draw FBO, `None` = the default framebuffer); the one `()`
 //! (`Queue`) is honest because glow uploads through its context rather than a queue, and
-//! `TargetFormat` is the **framebuffer size** (the composite viewport) — not a color format: the
-//! composite needs the full draw-target size for its full-framebuffer `glViewport`, and the encode
-//! bit is still derived at draw time from the live context's `GL_FRAMEBUFFER_SRGB` state, not from a
-//! format token. v1 therefore ships **with** these traits, not a concrete one-backend pair.
+//! `TargetSpec` is the **framebuffer size** (the composite viewport): the composite needs the full
+//! draw-target size for its full-framebuffer `glViewport`, and the encode bit is derived at draw
+//! time from the live context's `GL_FRAMEBUFFER_SRGB` state rather than from a format token.
+//! v1 therefore ships **with** these traits, not a concrete one-backend pair.
 //!
 //! [`backdrop-blur-glow`]: https://github.com/abdu-benayad/backdrop-blur
 
@@ -66,10 +66,10 @@ pub trait BackdropBlur {
     type SourceTexture;
     /// The composite destination (`wgpu::TextureView`; a glow framebuffer).
     type Target;
-    /// The target's color format (`wgpu::TextureFormat`; a GLES internal-format enum). Passed
-    /// to `prepare` because wgpu bakes the fragment-target format into the composite pipeline
-    /// at creation, so the pipeline is cached per format.
-    type TargetFormat;
+    /// The static facts about the composite target that `prepare` needs ahead of `record`
+    /// (`wgpu::TextureFormat` — the composite pipeline is baked and cached per fragment-target
+    /// format; `FramebufferSize` for glow — the composite's full-framebuffer viewport).
+    type TargetSpec;
     /// An **owned**, opaque per-call handle carrying the resolved payload (kernel offsets,
     /// tint, [`ResolvedMask`](crate::ResolvedMask), target rect, and the resource keys) from
     /// `prepare` to `record`. Owned — it borrows nothing from the blurrer — and consumed by
@@ -78,7 +78,7 @@ pub trait BackdropBlur {
 
     /// **Phase 1** — holds the device + queue. Allocates and keys the ping-pong chain, lazily
     /// builds and caches pipelines (the fixed-scratch down/up pipelines once; the composite
-    /// pipeline per `target_format`), and resolves the payload into an owned
+    /// pipeline per `target_spec`), and resolves the payload into an owned
     /// [`Prepared`](Self::Prepared).
     ///
     /// Returns `Ok(None)` when `request.source_region` clips to nothing against `source` — a
@@ -92,7 +92,7 @@ pub trait BackdropBlur {
         device: &Self::Device,
         queue: &Self::Queue,
         source: &Self::SourceTexture,
-        target_format: Self::TargetFormat,
+        target_spec: Self::TargetSpec,
         request: &BlurRequest,
     ) -> Result<Option<Self::Prepared>, BlurError>;
 

@@ -191,15 +191,15 @@ pub trait BackdropBlur {
     type Encoder;       // wgpu::CommandEncoder | glow::Context (the immediate-mode draw handle)
     type SourceTexture; // wgpu::TextureView    | glow::Texture     (sampleable backdrop)
     type Target;        // wgpu::TextureView    | glow framebuffer  (composite destination)
-    type TargetFormat;  // wgpu::TextureFormat  | FramebufferSize (glow, as-built: the composite
-                        //   viewport SIZE, not a color format — glow never introspects the target's
-                        //   internal format; see the seam.rs "Gate verdict". The slot's real role is
-                        //   "what prepare needs to know about the target", which is backend-specific.
+    type TargetSpec;    // wgpu::TextureFormat  | FramebufferSize — the static facts about the
+                        //   composite target that prepare needs ahead of record; each backend binds
+                        //   what it must know (wgpu bakes the fragment-target format into the
+                        //   composite pipeline; glow needs the full-framebuffer composite viewport).
     type Prepared;      // opaque, OWNED per-call handle (no borrow of self) carrying the resolved
                         // payload (offsets, tint, mask, rect, the resource keys) from prepare -> record
 
     /// Phase 1 — has device + queue. Allocates/keys the ping-pong chain, lazily builds & caches
-    /// pipelines (the fixed-scratch down/up pipelines once; the COMPOSITE pipeline per `target_format`,
+    /// pipelines (the fixed-scratch down/up pipelines once; the COMPOSITE pipeline per `target_spec`,
     /// since wgpu bakes the fragment-target format into the pipeline at creation — M3/M8), resolves the
     /// payload (offsets, tint, mask, rect) into `Prepared`. Returns an OWNED handle (no borrow of self)
     /// so `record` need not immediately follow.
@@ -210,7 +210,7 @@ pub trait BackdropBlur {
         device: &Self::Device,
         queue: &Self::Queue,
         source: &Self::SourceTexture,
-        target_format: Self::TargetFormat,
+        target_spec: Self::TargetSpec,
         request: &BlurRequest,
     ) -> Result<Option<Self::Prepared>, BlurError>;
 
@@ -263,7 +263,7 @@ pub trait GrabPass: BackdropBlur {
   owned handle (K1).
 - **Cache key is a newtype, not size alone (S5):** `PingPongKey { size, levels }` keys the fixed-format
   (`Rgba16Float`) scratch chain (`levels` = dual-Kawase mip depth, a function of `BlurStrength × Scale`).
-  The **composite pipeline is keyed separately by `TargetFormat`** (M8) — the down/up scratch is always
+  The **composite pipeline is keyed separately by `TargetSpec`** (M8) — the down/up scratch is always
   the internal format, only the final composite matches the caller's target. `BlurError::UnsupportedTarget`
   is an explicit allowlist check, distinct from wgpu's must-match-format validation (M8).
 - **Threading (C1):** the blurrer is single-threaded, frame-serial (`&mut self` in prepare, `&self`

@@ -83,7 +83,7 @@ impl BackdropBlur for GlowBlur {
     type Encoder = glow::Context;
     type SourceTexture = GrabSource;
     type Target = Option<glow::Framebuffer>;
-    type TargetFormat = FramebufferSize;
+    type TargetSpec = FramebufferSize;
     type Prepared = GlPrepared;
 
     fn prepare(
@@ -91,12 +91,12 @@ impl BackdropBlur for GlowBlur {
         device: &Self::Device,
         _queue: &Self::Queue,
         source: &Self::SourceTexture,
-        target_format: Self::TargetFormat,
+        target_spec: Self::TargetSpec,
         request: &BlurRequest,
     ) -> Result<Option<Self::Prepared>, BlurError> {
         // The grab is already the clipped region; clip_to against the framebuffer is the identity
         // in the normal path and the no-op guard when the request region was fully offscreen.
-        let Some(clipped) = request.source_region.clip_to(target_format.0) else {
+        let Some(clipped) = request.source_region.clip_to(target_spec.0) else {
             return Ok(None);
         };
 
@@ -163,7 +163,7 @@ impl BackdropBlur for GlowBlur {
             backdrop_uv_offset,
             backdrop_uv_scale,
             mask,
-            target_format.0,
+            target_spec.0,
             request.opacity.value(),
         );
 
@@ -202,7 +202,7 @@ impl GrabPass for GlowBlur {
     ) -> Result<Self::SourceTexture, BlurError> {
         // The grab (2c) consumes the bottom-left region directly — no flip (DESIGN §5). It returns
         // only the grabbed texture: the composite's *full* framebuffer size is the adapter's to know
-        // (it holds the true screen size), and it passes that to `prepare` as the `TargetFormat`
+        // (it holds the true screen size), and it passes that to `prepare` as the `TargetSpec`
         // ([`FramebufferSize`]). So `grab_source` never fabricates a size from the region.
         let texture = self.grab(device, *framebuffer, region)?;
         Ok(GrabSource { texture })

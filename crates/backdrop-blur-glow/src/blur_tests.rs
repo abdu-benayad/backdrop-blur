@@ -191,7 +191,7 @@ fn frost(
         opacity: Opacity::new(opacity),
     };
     // The composite viewport is the true screen size the egui adapter holds, passed as the
-    // backend's TargetFormat (a missing size would be a compile error, not a silent AA regression).
+    // backend's TargetSpec (a missing size would be a compile error, not a silent AA regression).
     let prepared = blur
         .prepare(&*gl, &(), &source, FramebufferSize([DIM, DIM]), &request)
         .expect("prepare")

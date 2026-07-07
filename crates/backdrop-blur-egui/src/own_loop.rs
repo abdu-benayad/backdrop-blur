@@ -63,7 +63,7 @@ pub(crate) struct SeamContext<'a, B: BackdropBlur> {
     pub encoder: &'a mut B::Encoder,
     pub source: &'a B::SourceTexture,
     pub target: &'a B::Target,
-    pub target_format: B::TargetFormat,
+    pub target_spec: B::TargetSpec,
 }
 
 /// The backend-agnostic core of the adapter: for each surface, `prepare` the blur and `record` it
@@ -80,18 +80,14 @@ pub(crate) fn composite_surfaces<B>(
 ) -> Result<usize, BlurError>
 where
     B: BackdropBlur,
-    B::TargetFormat: Copy,
+    B::TargetSpec: Copy,
 {
     let mut recorded = 0;
     for surface in surfaces {
         let request = surface.request(pixels_per_point);
-        if let Some(prepared) = blur.prepare(
-            ctx.device,
-            ctx.queue,
-            ctx.source,
-            ctx.target_format,
-            &request,
-        )? {
+        if let Some(prepared) =
+            blur.prepare(ctx.device, ctx.queue, ctx.source, ctx.target_spec, &request)?
+        {
             blur.record(ctx.encoder, ctx.target, prepared)?;
             recorded += 1;
         }
@@ -253,7 +249,7 @@ impl OwnLoopRenderer {
                 encoder: &mut encoder,
                 source: &source,
                 target: frame.target,
-                target_format: self.target_format,
+                target_spec: self.target_format,
             },
             surfaces,
             frame.screen.pixels_per_point,
@@ -359,7 +355,7 @@ mod tests {
         type Encoder = ();
         type SourceTexture = ();
         type Target = ();
-        type TargetFormat = ();
+        type TargetSpec = ();
         type Prepared = ();
 
         fn prepare(
@@ -367,7 +363,7 @@ mod tests {
             _device: &(),
             _queue: &(),
             _source: &(),
-            _target_format: (),
+            _target_spec: (),
             request: &BlurRequest,
         ) -> Result<Option<()>, BlurError> {
             self.events.borrow_mut().push("prepare");
@@ -420,7 +416,7 @@ mod tests {
                 encoder: &mut (),
                 source: &(),
                 target: &(),
-                target_format: (),
+                target_spec: (),
             },
             &surfaces,
             1.0,

@@ -377,7 +377,7 @@ impl BackdropBlur for WgpuBlur {
     type Encoder = wgpu::CommandEncoder;
     type SourceTexture = SourceView;
     type Target = wgpu::TextureView;
-    type TargetFormat = wgpu::TextureFormat;
+    type TargetSpec = wgpu::TextureFormat;
     type Prepared = WgpuPrepared;
 
     fn prepare(
@@ -385,7 +385,7 @@ impl BackdropBlur for WgpuBlur {
         device: &Self::Device,
         _queue: &Self::Queue,
         source: &Self::SourceTexture,
-        target_format: Self::TargetFormat,
+        target_spec: Self::TargetSpec,
         request: &BlurRequest,
     ) -> Result<Option<Self::Prepared>, BlurError> {
         let Some(clipped) = request.source_region.clip_to(source.size) else {
@@ -400,13 +400,13 @@ impl BackdropBlur for WgpuBlur {
         self.begin_frame();
 
         let encode_srgb = matches!(
-            composite_encode_srgb(target_format).ok_or_else(|| BlurError::UnsupportedTarget {
-                format: format!("{target_format:?}"),
+            composite_encode_srgb(target_spec).ok_or_else(|| BlurError::UnsupportedTarget {
+                format: format!("{target_spec:?}"),
             })?,
             TargetEncoding::Srgb
         );
         let decode_srgb = matches!(source.color_space, SourceColorSpace::GammaSrgb);
-        self.ensure_composite_pipeline(device, target_format);
+        self.ensure_composite_pipeline(device, target_spec);
 
         let radius = request.physical_blur_radius();
         let [source_w, source_h] = [source.size[0] as f32, source.size[1] as f32];
@@ -587,7 +587,7 @@ impl BackdropBlur for WgpuBlur {
 
         self.generation += 1;
         Ok(Some(WgpuPrepared {
-            target_format,
+            target_format: target_spec,
             generation: self.generation,
             blur,
             composite_bind,
