@@ -171,12 +171,20 @@ pub struct GrabPassRenderer {
     /// [`RepaintPolicy::Live`] the callback runs every frame, so without this latch a
     /// persistently-failing context would flood the log (DESIGN §7's "warn once").
     warned: Arc<AtomicBool>,
+    /// The thread the renderer was built on — the documented eframe wiring constructs on the
+    /// paint thread (`CreationContext` runs there), and off-thread GL is undefined behavior.
+    /// Each frost callback `debug_assert`s it runs on this thread (GLOW_DESIGN §6).
+    paint_thread: std::thread::ThreadId,
 }
 
 impl GrabPassRenderer {
     /// Build the backend against the host's shared GL context (probe its capabilities, compile the
     /// programs). Returns [`BlurError::UnsupportedContext`] if the context is below the backend's
     /// minimums — desktop GL 3.3, GLES 3.0, or WebGL 2.0 (raised inside [`GlowBlur::new`]).
+    ///
+    /// **Precondition:** construct on the paint thread (the documented eframe wiring builds from
+    /// `eframe::CreationContext::gl`, which runs there) — the frost callbacks `debug_assert` they
+    /// run on the construction thread, because off-thread GL is undefined behavior.
     ///
     /// [`BlurError::UnsupportedContext`]: backdrop_blur_core::BlurError::UnsupportedContext
     pub fn new(gl: &Arc<glow::Context>) -> Result<Self, BlurError> {
@@ -185,6 +193,7 @@ impl GrabPassRenderer {
             blur: Arc::new(Mutex::new(blur)),
             outcome: Arc::new(AtomicU8::new(FrostOutcome::DidNotFire as u8)),
             warned: Arc::new(AtomicBool::new(false)),
+            paint_thread: std::thread::current().id(),
         })
     }
 
@@ -256,12 +265,19 @@ impl GrabPassRenderer {
         let blur = Arc::clone(&self.blur);
         let outcome = Arc::clone(&self.outcome);
         let warned = Arc::clone(&self.warned);
+        let paint_thread = self.paint_thread;
         let callback = egui_glow::CallbackFn::new(move |info, painter| {
             // Armed at callback ENTRY (GLOW_DESIGN §7), the successor of the old set-`ran`-at-entry
             // flag: every exit path below commits its outcome, and a panic before a commit is
             // recorded as `Failed` by the guard's Drop — so a fired callback can never read back
             // as `DidNotFire`, even when it clips to nothing or dies mid-frost.
             let mut outcome_guard = FrostGuard::arm(&outcome);
+            debug_assert_eq!(
+                std::thread::current().id(),
+                paint_thread,
+                "grab-pass paint callbacks must run on the thread the renderer was created on \
+                 (off-thread GL is undefined behavior)"
+            );
             let gl = painter.gl();
 
             let Some((region, framebuffer_size)) = callback_region(&info) else {
