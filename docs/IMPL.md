@@ -97,10 +97,10 @@ Record the sketch + decision in core's module docs. (Expectation: it fits — th
    `crates/backdrop-blur-core` with `#![forbid(unsafe_code)]`, empty `lib.rs`. `rust-toolchain.toml` pins
    the MSRV. *Green:* `cargo fmt` + `cargo clippy --workspace --all-targets -- -D warnings` + `cargo build`.
 
-1b. **Domain types + pure tests** (the only headless-GPU-free unit tier). `BlurStrength`, `LinearRgba`,
+1b. **Domain types + pure tests** (the only headless-GPU-free unit tier). `BlurRadius`, `LinearRgba`,
    `Tint`, `CornerRadius`, `Scale`, `Region`, `BlurRequest`, `ResolvedMask`, `BlurError` (+ `BlurStage`,
    the boxed `BackendError`), `RepaintPolicy`. Pure fns + `{fn}_{scenario}` tests:
-   `BlurStrength × Scale → (levels, per-pass offsets)`; `CornerRadius → ResolvedMask` with the
+   `BlurRadius × Scale → (levels, per-pass offsets)`; `CornerRadius → ResolvedMask` with the
    `min(extent)/2` clamp; **`Region::is_empty_or_offscreen` predicate** (the no-op *predicate* lives here;
    the no-op *behavior* — `prepare → Ok(None)` — is asserted in the gated wgpu tier 2b, since core has no
    `prepare` to call — M6). *Green:* `cargo test -p backdrop-blur-core` (GPU-free, runs anywhere).
@@ -139,7 +139,7 @@ Record the sketch + decision in core's module docs. (Expectation: it fits — th
    (DESIGN §11). Port the exact published ARM/scenefx 5-tap down / 8-tap up offsets; a **pure unit test
    pins those offsets** (a wrong-weight blur still passes a "non-trivial output" readback — the offset test
    is the real guard) and resolves the picom-vs-KWin half-pixel double-apply convention (research). Swap it
-   in behind a strength threshold. *Green:* gated tier + the new offset unit test (default tier).
+   in behind a radius threshold. *Green:* gated tier + the new offset unit test (default tier).
 
 2c. **Composite.** `composite.wgsl`: sample the blurred chain, evaluate the rounded-rect SDF from
    `ResolvedMask`, apply `Tint`, **re-encode to the target's color space**, blend in. The **alpha
@@ -175,7 +175,7 @@ Record the sketch + decision in core's module docs. (Expectation: it fits — th
    the gated tier only. *Green:* default tier `cargo test -p backdrop-blur-egui`.
 
 3c. **`examples/egui-wgpu-panel`** (own crate, winit). The example enables `egui-wgpu/winit` + `egui-winit`
-   (the only place winit enters). A frosted panel over moving content, blur on/off + strength A/B, a
+   (the only place winit enters). A frosted panel over moving content, blur on/off + radius A/B, a
    vsync-off per-frame blur-cost readout (the spike's UX, on wgpu — feeds the §11 benchmark). *Green:*
    `cargo build -p egui-wgpu-panel` (run is manual — needs a display); its own `clippy`. *(Optional, K4: a
    feature-gated lavapipe render-snapshot of the example's output is the only true proof the own-loop

@@ -4,7 +4,7 @@
 //! (DESIGN §4.1). [`ResolvedMask`] is the one shader input core computes; [`BlurRequest`] is
 //! the bundle that crosses the seam.
 
-use crate::material::{BlurStrength, CornerRadius, Opacity, Tint};
+use crate::material::{BlurRadius, CornerRadius, Opacity, Tint};
 
 /// A logical→physical scale factor (DPI) for one region. Strictly positive by construction:
 /// a zero or negative factor would make the resolution math degenerate (every resolved radius
@@ -132,7 +132,7 @@ pub struct BlurRequest {
     /// Where to composite the frosted surface in the `target` (physical px + its scale).
     pub target_rect: Region,
     /// How much blur (logical points).
-    pub strength: BlurStrength,
+    pub blur_radius: BlurRadius,
     /// The glass film.
     pub tint: Tint,
     /// How round the surface corners are (logical points).
@@ -145,12 +145,13 @@ impl BlurRequest {
     /// The physical-pixel blur radius, resolved against the **source** region's scale.
     ///
     /// The blur convolution happens in source-texture pixel space, so this is the only correct
-    /// scale; pinning it here (rather than exposing a bare `strength.to_physical_radius(scale)`)
+    /// scale; pinning it here (rather than exposing a bare `blur_radius.to_physical_radius(scale)`)
     /// means a backend cannot accidentally resolve against `target_rect.scale` on a
     /// mismatched-DPI surface. Mirrors how [`ResolvedMask::from_target`] pins the target scale
     /// for the corner radius.
     pub fn physical_blur_radius(&self) -> f32 {
-        self.strength.to_physical_radius(self.source_region.scale)
+        self.blur_radius
+            .to_physical_radius(self.source_region.scale)
     }
 }
 
@@ -258,7 +259,7 @@ mod tests {
         let request = BlurRequest {
             source_region: region([0, 0], [100, 100], 2.0),
             target_rect: region([0, 0], [80, 60], 1.0),
-            strength: BlurStrength::new(8.0),
+            blur_radius: BlurRadius::new(8.0),
             tint: Tint::new(LinearRgba::new(0.1, 0.1, 0.12, 0.7)),
             corner_radius: CornerRadius::new(10.0),
             opacity: Opacity::default(),
@@ -273,12 +274,12 @@ mod tests {
         let request = BlurRequest {
             source_region: r,
             target_rect: r,
-            strength: BlurStrength::new(12.0),
+            blur_radius: BlurRadius::new(12.0),
             tint: Tint::new(LinearRgba::new(0.1, 0.1, 0.12, 0.7)),
             corner_radius: CornerRadius::new(10.0),
             opacity: Opacity::default(),
         };
-        assert_eq!(request.strength.points(), 12.0);
+        assert_eq!(request.blur_radius.points(), 12.0);
         assert!(close(request.tint.color().a(), 0.7));
     }
 }

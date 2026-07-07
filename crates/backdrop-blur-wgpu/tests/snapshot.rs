@@ -9,7 +9,7 @@
 #![cfg(feature = "image-snapshots")]
 
 use backdrop_blur_core::{
-    BackdropBlur, BlurRequest, BlurStrength, CornerRadius, LinearRgba, Opacity, Region, Scale, Tint,
+    BackdropBlur, BlurRadius, BlurRequest, CornerRadius, LinearRgba, Opacity, Region, Scale, Tint,
 };
 use backdrop_blur_wgpu::{SourceColorSpace, SourceView, WgpuBlur};
 
@@ -158,7 +158,7 @@ fn frost_and_read(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
     backdrop: &wgpu::Texture,
-    strength: f32,
+    blur_radius: f32,
     tint: Tint,
     opacity: f32,
 ) -> Vec<u8> {
@@ -184,7 +184,7 @@ fn frost_and_read(
     let request = BlurRequest {
         source_region: panel,
         target_rect: panel,
-        strength: BlurStrength::new(strength),
+        blur_radius: BlurRadius::new(blur_radius),
         tint,
         corner_radius: CornerRadius::new(24.0),
         opacity: Opacity::new(opacity),
@@ -329,7 +329,7 @@ fn frosted_panel_blurs_the_backdrop_inside_the_masked_rect() {
     let request = BlurRequest {
         source_region: panel,
         target_rect: panel,
-        strength: BlurStrength::new(10.0),
+        blur_radius: BlurRadius::new(10.0),
         tint: Tint::new(LinearRgba::new(0.0, 0.0, 0.0, 0.15)), // faint darkening film
         corner_radius: CornerRadius::new(24.0),
         opacity: Opacity::default(),
@@ -420,7 +420,7 @@ fn frosted_panel_blurs_the_backdrop_inside_the_masked_rect() {
 
 #[test]
 fn dual_kawase_preserves_energy_on_a_flat_backdrop() {
-    // strength 30 (≥ the 16px threshold) takes the dual-Kawase path. Over a FLAT mid-gray backdrop
+    // radius 30 (≥ the 16px threshold) takes the dual-Kawase path. Over a FLAT mid-gray backdrop
     // with no tint, an energy-preserving down/up filter (5-tap ÷8, 8-tap ÷12) must leave the gray
     // unchanged — a wrong-weight kernel that doesn't sum to 1 shifts the brightness and fails here.
     // This is the real guard the "non-trivial output" readback cannot give (IMPL §2b′).
@@ -555,11 +555,11 @@ fn opacity_fades_the_surface_linearly_toward_the_destination() {
     let (device, queue) = software_device();
     let backdrop = backdrop_texture(&device, &queue);
     let tint = Tint::new(LinearRgba::new(0.0, 0.0, 0.0, 0.2)); // a darkening film, so F != D
-    let strength = 16.0;
+    let blur_radius = 16.0;
 
-    let out0 = frost_and_read(&device, &queue, &backdrop, strength, tint, 0.0);
-    let half = frost_and_read(&device, &queue, &backdrop, strength, tint, 0.5);
-    let full = frost_and_read(&device, &queue, &backdrop, strength, tint, 1.0);
+    let out0 = frost_and_read(&device, &queue, &backdrop, blur_radius, tint, 0.0);
+    let half = frost_and_read(&device, &queue, &backdrop, blur_radius, tint, 0.5);
+    let full = frost_and_read(&device, &queue, &backdrop, blur_radius, tint, 1.0);
     let dest = read_back(&device, &queue, &backdrop); // D: the untouched destination
 
     // opacity = 0 leaves the destination untouched (the surface is absent).
@@ -617,7 +617,7 @@ fn scratch_cache_evicts_old_sizes_instead_of_leaking() {
         let request = BlurRequest {
             source_region: panel,
             target_rect: panel,
-            strength: BlurStrength::new(6.0),
+            blur_radius: BlurRadius::new(6.0),
             tint: Tint::new(LinearRgba::new(1.0, 1.0, 1.0, 0.1)),
             corner_radius: CornerRadius::new(8.0),
             opacity: Opacity::new(1.0),

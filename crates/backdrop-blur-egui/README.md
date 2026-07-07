@@ -31,7 +31,7 @@ backdrop-blur-egui = { version = "0.1", default-features = false, features = ["g
 
 ```rust,ignore
 use backdrop_blur_egui::{
-    BlurStrength, CornerRadius, GrabPassRenderer, Opacity, RepaintPolicy, Surface, Tint,
+    BlurRadius, CornerRadius, GrabPassRenderer, Opacity, RepaintPolicy, Surface, Tint,
 };
 
 // Once, in eframe's creation closure (glow backend):
@@ -40,7 +40,7 @@ let renderer = GrabPassRenderer::new(cc.gl.as_ref().expect("glow backend"))?;
 // Each frame, inside your panel — FROST FIRST, then paint the foreground on top:
 let surface = Surface {
     rect: panel_rect,                                  // dynamic rect? pass LAST frame's (see below)
-    strength: BlurStrength::new(16.0),                 // blur radius, logical points
+    blur_radius: BlurRadius::new(16.0),                 // logical points
     tint: Tint::from_srgb_unmultiplied([255, 255, 255, 40]), // film: alpha = tint vs. blur mix
     corner_radius: CornerRadius::new(12.0),
     opacity: Opacity::FULL,                            // fade dial — drive per frame, NOT multiply_opacity
@@ -67,7 +67,7 @@ nothing to the AccessKit tree.
 
 Independent knobs — conflating them is the most common "my glass looks wrong":
 
-- **`BlurStrength`** — the blur *radius* in logical points. `0` = no blur (a plain tinted pane).
+- **`BlurRadius`** — in logical points. `0` = no blur (a plain tinted pane).
 - **`Tint`** — the glass *film* over the blur, a linear-light color whose **alpha is the film mix**
   (how much tint shows vs. how much blurred backdrop shows through).
 - **`Opacity`** — the fade dial. Drive it per frame; do not reach for `multiply_opacity`.

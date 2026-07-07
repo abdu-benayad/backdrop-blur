@@ -30,7 +30,7 @@ impl Surface {
         BlurRequest {
             source_region: region,
             target_rect: region,
-            strength: self.strength,
+            blur_radius: self.blur_radius,
             tint: self.tint,
             corner_radius: self.corner_radius,
             opacity: self.opacity,
@@ -327,7 +327,7 @@ mod tests {
     // submit) needs real egui-wgpu + a GPU, so it is covered only by the gated `own_loop_render`
     // test (`--features image-snapshots`, lavapipe), not the always-on `cargo test`.
     use super::*;
-    use backdrop_blur_core::{BlurStrength, CornerRadius, Tint};
+    use backdrop_blur_core::{BlurRadius, CornerRadius, Tint};
     use std::cell::RefCell;
 
     #[test]
@@ -383,7 +383,7 @@ mod tests {
     fn surface(rect: egui::Rect) -> Surface {
         Surface {
             rect,
-            strength: BlurStrength::new(8.0),
+            blur_radius: BlurRadius::new(8.0),
             tint: Tint::new(backdrop_blur_core::LinearRgba::new(0.0, 0.0, 0.0, 0.1)),
             corner_radius: CornerRadius::new(12.0),
             opacity: backdrop_blur_core::Opacity::default(),

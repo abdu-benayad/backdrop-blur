@@ -6,10 +6,10 @@
 //!
 //! Layout per frame: (1) paint a vivid, sharp-edged backdrop (so the blur is obvious), (2) frost a
 //! centered panel (the blur source is the backdrop directly behind it), (3) paint the panel's
-//! foreground text over the frosted background. A slider drives the blur strength live.
+//! foreground text over the frosted background. A slider drives the blur radius live.
 
 use backdrop_blur_egui::{
-    BlurStrength, CornerRadius, GrabPassRenderer, LinearRgba, Opacity, RepaintPolicy, Surface, Tint,
+    BlurRadius, CornerRadius, GrabPassRenderer, LinearRgba, Opacity, RepaintPolicy, Surface, Tint,
     glow,
 };
 use egui::{Align2, Color32, FontId, Pos2, Rect, Vec2, pos2, vec2};
@@ -18,7 +18,7 @@ struct FrostApp {
     /// `None` if the backend could not be built (e.g. a context too old) — then the panel falls
     /// back to a plain translucent fill so the app still runs.
     renderer: Option<GrabPassRenderer>,
-    strength: f32,
+    blur_radius: f32,
     panel: Rect,
 }
 
@@ -30,7 +30,7 @@ impl FrostApp {
             .and_then(|gl| GrabPassRenderer::new(gl).ok());
         Self {
             renderer,
-            strength: 24.0,
+            blur_radius: 24.0,
             panel: Rect::from_min_size(pos2(140.0, 110.0), vec2(300.0, 200.0)),
         }
     }
@@ -66,8 +66,8 @@ impl eframe::App for FrostApp {
         // 1) The colorful backdrop FIRST (lower z = the grabbed blur source).
         Self::paint_backdrop(ui.painter(), full);
 
-        // A live blur-strength slider (drawn over the backdrop, top-left, clear of the panel).
-        ui.add(egui::Slider::new(&mut self.strength, 0.0..=64.0).text("blur strength"));
+        // A live blur-radius slider (drawn over the backdrop, top-left, clear of the panel).
+        ui.add(egui::Slider::new(&mut self.blur_radius, 0.0..=64.0).text("blur radius"));
 
         // 2) Frost the panel: grab → blur → composite, in the paint callback.
         if let Some(renderer) = &self.renderer {
@@ -75,7 +75,7 @@ impl eframe::App for FrostApp {
                 ui,
                 Surface {
                     rect: self.panel,
-                    strength: BlurStrength::new(self.strength),
+                    blur_radius: BlurRadius::new(self.blur_radius),
                     // A faint white film over the blur (linear, 10% opacity).
                     tint: Tint::new(LinearRgba::new(1.0, 1.0, 1.0, 0.10)),
                     corner_radius: CornerRadius::new(18.0),

@@ -120,7 +120,7 @@ All vocabulary is backend-agnostic and lives in `backdrop-blur-core` — pure, h
 ### 4.1 Coordinate convention (pinned — not an open question)
 
 **The seam speaks physical pixels.** `BlurRequest` carries physical-pixel `Region`s; `Scale` exists
-*only* so the backend resolves logical `BlurStrength`/`CornerRadius` to pixels; **the seam never sees
+*only* so the backend resolves logical `BlurRadius`/`CornerRadius` to pixels; **the seam never sees
 a logical rect.** `source_region` and `target_rect` carry **independent** scales/sizes, because the
 own-loop intermediate (e.g. `Rgba16Float`, possibly at a different size) and the swapchain can differ
 in DPI — so `Scale` is per-`Region`, not one global factor. This is a frozen contract, removed from
@@ -128,7 +128,7 @@ the old §14 open list.
 
 ### 4.2 The material — "what kind of glass"
 
-- `BlurStrength(f32)` — logical points of blur radius. The backend resolves it (× the region's
+- `BlurRadius(f32)` — logical points of blur radius. The backend resolves it (× the region's
   `Scale`) to a dual-Kawase iteration count + per-pass sampling offset; **there is no closed-form
   sigma↔iterations map** (research), so the backend interpolates offsets — a named IMPL item, but
   the *type* is settled.
@@ -158,7 +158,7 @@ the old §14 open list.
   pub struct BlurRequest {
       pub source_region: Region,   // where the backdrop lives in `source` (physical px + scale)
       pub target_rect:   Region,   // where to composite the frosted surface in `target`
-      pub strength:      BlurStrength,
+      pub blur_radius:   BlurRadius,
       pub tint:          Tint,
       pub corner_radius: CornerRadius,
       pub opacity:       Opacity,    // surface-global fade [0,1]; default 1.0 (added post-design)
@@ -262,7 +262,7 @@ pub trait GrabPass: BackdropBlur {
   (overlapping glass) is deferred (§9) and would need a per-call scratch discriminator, not just the
   owned handle (K1).
 - **Cache key is a newtype, not size alone (S5):** `PingPongKey { size, levels }` keys the fixed-format
-  (`Rgba16Float`) scratch chain (`levels` = dual-Kawase mip depth, a function of `BlurStrength × Scale`).
+  (`Rgba16Float`) scratch chain (`levels` = dual-Kawase mip depth, a function of `BlurRadius × Scale`).
   The **composite pipeline is keyed separately by `TargetSpec`** (M8) — the down/up scratch is always
   the internal format, only the final composite matches the caller's target. `BlurError::UnsupportedTarget`
   is an explicit allowlist check, distinct from wgpu's must-match-format validation (M8).
@@ -456,7 +456,7 @@ that *does* expose a sampleable-backdrop hook drops in as an additive adapter cr
 
 ## 11. Verification
 
-- **Core unit tests** (headless, no GPU): `BlurStrength × Scale → iteration/offset interpolation; the
+- **Core unit tests** (headless, no GPU): `BlurRadius × Scale → iteration/offset interpolation; the
   `CornerRadius` clamp + logical→physical resolution producing `ResolvedMask`; `Region` clipping; the
   linear-space tint conversion. The pure heart. (The per-pixel SDF is the shader's; core's testable part
   is the resolved params — S9.)
@@ -507,7 +507,7 @@ non-egui toolkit adapter.
 
 - **Trait-or-no-trait for v1** (§13 step 1 gate) — does the paper glow sketch justify the seam now, or
   ship a concrete one-backend v1 and lift the trait when glow lands? Decided at step 1, not before.
-- **Continuous `BlurStrength` → per-pass offsets** — no closed-form sigma↔iterations; the backend
+- **Continuous `BlurRadius` → per-pass offsets** — no closed-form sigma↔iterations; the backend
   interpolates offsets (research open-question; the *type* is settled, the curve is IMPL).
 - **Edge alpha convention** (§8) — straight vs premultiplied linear at the glass boundary; the §11
   snapshot probe decides, not assumption.

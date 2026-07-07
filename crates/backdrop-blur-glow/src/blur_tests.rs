@@ -9,7 +9,7 @@
 use super::*;
 use crate::GlowBlur;
 use crate::gl_harness::{headless_gl, read_texture_rgba8};
-use backdrop_blur_core::{BlurStrength, CornerRadius, LinearRgba, Opacity, Region, Scale, Tint};
+use backdrop_blur_core::{BlurRadius, CornerRadius, LinearRgba, Opacity, Region, Scale, Tint};
 use glow::HasContext;
 
 const DIM: u32 = 128;
@@ -155,8 +155,8 @@ fn panel(origin: [u32; 2], size: [u32; 2]) -> Region {
 }
 
 /// Run the full seam — grab_source → prepare → record — over `scene`, compositing into a `target`
-/// FBO seeded with `seed`, and return the target's color texture for readback. `strength`/`tint`/
-/// `radius` describe the glass. The grab region is the panel itself (the adapter's `viewport ∩
+/// FBO seeded with `seed`, and return the target's color texture for readback. `blur_radius`/`tint`/
+/// `corner_radius` describe the glass. The grab region is the panel itself (the adapter's `viewport ∩
 /// clip_rect`, here the whole panel in-bounds).
 #[expect(
     clippy::too_many_arguments,
@@ -168,7 +168,7 @@ fn frost(
     blur: &mut GlowBlur,
     scene: &Scene,
     panel_rect: Region,
-    strength: f32,
+    blur_radius: f32,
     corner_radius: f32,
     tint: Tint,
     seed: [f32; 4],
@@ -185,7 +185,7 @@ fn frost(
     let request = BlurRequest {
         source_region: panel_rect,
         target_rect: panel_rect,
-        strength: BlurStrength::new(strength),
+        blur_radius: BlurRadius::new(blur_radius),
         tint,
         corner_radius: CornerRadius::new(corner_radius),
         opacity: Opacity::new(opacity),
@@ -219,7 +219,7 @@ fn gaussian_softens_a_hard_edge() {
     // smooth ramp — the seam pixel is a midtone, and brightness bleeds a few px into the black side.
     let scene = split_backdrop(&gl, 64, [0.0, 0.0, 0.0, 1.0], [1.0, 1.0, 1.0, 1.0]);
     let p = panel([32, 32], [64, 64]);
-    // strength 8 → sigma ≈ 2.67, taps 8: a measurable ramp several px wide.
+    // radius 8 → sigma ≈ 2.67, taps 8: a measurable ramp several px wide.
     let target = frost(
         &mut gl,
         &mut blur,
@@ -259,7 +259,7 @@ fn gaussian_softens_a_hard_edge() {
 fn dual_kawase_preserves_a_flat_backdrop() {
     let mut gl = headless_gl();
     let mut blur = GlowBlur::new(&gl).expect("new");
-    // sRGB 0.5 (≈188) flat. strength 30 (≥16) takes the dual-Kawase path; energy-preserving down
+    // sRGB 0.5 (≈188) flat. radius 30 (≥16) takes the dual-Kawase path; energy-preserving down
     // (÷8) + up (÷12) must leave the flat gray unchanged — a wrong-weight kernel shifts brightness.
     let mid = 0.5_f32;
     let scene = flat_backdrop(&gl, [mid, mid, mid, 1.0]);
@@ -707,7 +707,7 @@ fn record_leaves_gl_state_unchanged() {
     let request = BlurRequest {
         source_region: p,
         target_rect: p,
-        strength: BlurStrength::new(8.0),
+        blur_radius: BlurRadius::new(8.0),
         tint: Tint::new(LinearRgba::new(0.0, 0.0, 0.0, 0.2)),
         corner_radius: CornerRadius::new(8.0),
         opacity: Opacity::default(),
@@ -835,7 +835,7 @@ fn prepare_is_a_no_op_for_a_fully_offscreen_region() {
     let request = BlurRequest {
         source_region: offscreen,
         target_rect: offscreen,
-        strength: BlurStrength::new(8.0),
+        blur_radius: BlurRadius::new(8.0),
         tint: no_tint(),
         corner_radius: CornerRadius::new(0.0),
         opacity: Opacity::default(),
@@ -866,7 +866,7 @@ fn frost_region_reports_clipped_empty_when_the_request_clips_to_nothing() {
     let request = BlurRequest {
         source_region: offscreen,
         target_rect: offscreen,
-        strength: BlurStrength::new(8.0),
+        blur_radius: BlurRadius::new(8.0),
         tint: no_tint(),
         corner_radius: CornerRadius::new(0.0),
         opacity: Opacity::default(),
@@ -901,7 +901,7 @@ fn frost_region_reports_composited_for_a_normal_panel() {
     let request = BlurRequest {
         source_region: p,
         target_rect: p,
-        strength: BlurStrength::new(6.0),
+        blur_radius: BlurRadius::new(6.0),
         tint: no_tint(),
         corner_radius: CornerRadius::new(0.0),
         opacity: Opacity::default(),

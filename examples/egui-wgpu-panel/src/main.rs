@@ -3,7 +3,7 @@
 //! Drives `egui-winit` + `egui-wgpu` directly (not eframe) and uses
 //! [`backdrop_blur_egui::OwnLoopRenderer`] to frost a panel over a moving backdrop.
 //!
-//! Controls: **Space** toggles the blur, **Up/Down** change its strength. The window title shows
+//! Controls: **Space** toggles the blur, **Up/Down** change its radius. The window title shows
 //! the per-frame blur cost.
 //!
 //! Run with a display: `cargo run -p egui-wgpu-panel` (needs a GPU/compositor).
@@ -16,7 +16,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use backdrop_blur_egui::{
-    BlurStrength, CornerRadius, FrameInput, LinearRgba, Opacity, OwnLoopRenderer, RepaintPolicy,
+    BlurRadius, CornerRadius, FrameInput, LinearRgba, Opacity, OwnLoopRenderer, RepaintPolicy,
     ScreenDescriptor, Surface, Tint, WgpuBlur,
 };
 use winit::application::ApplicationHandler;
@@ -42,7 +42,7 @@ struct App {
     gpu: Option<Gpu>,
     start: Instant,
     blur_on: bool,
-    strength: f32,
+    blur_radius: f32,
 }
 
 impl App {
@@ -51,7 +51,7 @@ impl App {
             gpu: None,
             start: Instant::now(),
             blur_on: true,
-            strength: 16.0,
+            blur_radius: 16.0,
         }
     }
 }
@@ -161,10 +161,10 @@ impl ApplicationHandler for App {
                 match key_event.logical_key {
                     Key::Named(NamedKey::Space) => self.blur_on = !self.blur_on,
                     Key::Named(NamedKey::ArrowUp) => {
-                        self.strength = (self.strength + 2.0).min(64.0)
+                        self.blur_radius = (self.blur_radius + 2.0).min(64.0)
                     }
                     Key::Named(NamedKey::ArrowDown) => {
-                        self.strength = (self.strength - 2.0).max(0.0)
+                        self.blur_radius = (self.blur_radius - 2.0).max(0.0)
                     }
                     _ => {}
                 }
@@ -215,7 +215,7 @@ impl App {
         let center = egui::pos2(w / ppp * 0.5, h / ppp * 0.5);
         let panel = Surface {
             rect: egui::Rect::from_center_size(center, panel_size),
-            strength: BlurStrength::new(self.strength),
+            blur_radius: BlurRadius::new(self.blur_radius),
             tint: Tint::new(LinearRgba::new(0.04, 0.05, 0.08, 0.35)),
             corner_radius: CornerRadius::new(24.0),
             opacity: Opacity::default(),
@@ -250,9 +250,9 @@ impl App {
             Ok(()) => {
                 frame.present();
                 gpu.window.set_title(&format!(
-                    "backdrop-blur — frosted panel  |  blur {}  strength {:.0}  |  {:.2} ms/frame",
+                    "backdrop-blur — frosted panel  |  blur {}  radius {:.0}  |  {:.2} ms/frame",
                     if self.blur_on { "on" } else { "off" },
-                    self.strength,
+                    self.blur_radius,
                     frame_ms,
                 ));
                 // Live backdrop → keep animating.
@@ -287,7 +287,7 @@ fn paint_backdrop(ui: &mut egui::Ui, t: f32) {
     painter.text(
         rect.min + egui::vec2(12.0, 12.0),
         egui::Align2::LEFT_TOP,
-        "Space: toggle blur   Up/Down: strength",
+        "Space: toggle blur   Up/Down: radius",
         egui::FontId::proportional(16.0),
         egui::Color32::from_white_alpha(180),
     );

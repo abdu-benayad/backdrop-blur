@@ -3,7 +3,7 @@
 //! Renders the own-loop demo scene — the same drifting colored blobs the winit example animates —
 //! through the real [`OwnLoopRenderer`] on a software (lavapipe) device, reads the target back, and
 //! writes PNGs. It is the *viewable* counterpart to `egui-wgpu-panel`: no window, no compositor,
-//! just image files showing the frosted glass at a range of strengths (Gaussian small-radius
+//! just image files showing the frosted glass at a range of blur radii (Gaussian small-radius
 //! through dual-Kawase large-radius) and two tints (dark glass, light frost).
 //!
 //! Run on a Vulkan software-rasterizer host (this repo's gated GPU tier):
@@ -21,7 +21,7 @@ use std::fs;
 use std::path::Path;
 
 use backdrop_blur_egui::{
-    BlurStrength, CornerRadius, FrameInput, LinearRgba, Opacity, OwnLoopRenderer, RepaintPolicy,
+    BlurRadius, CornerRadius, FrameInput, LinearRgba, Opacity, OwnLoopRenderer, RepaintPolicy,
     ScreenDescriptor, Surface, Tint, WgpuBlur,
 };
 
@@ -58,11 +58,14 @@ fn main() {
     );
 }
 
-/// The gallery: the bare backdrop, then the same scene frosted at rising strengths and two tints.
-/// Strengths straddle the 16 px Gaussian→dual-Kawase threshold so both algorithms are on display.
+/// The gallery: the bare backdrop, then the same scene frosted at rising blur radii and two tints.
+/// The radii straddle the 16 px Gaussian→dual-Kawase threshold so both algorithms are on display.
 fn variants() -> Vec<Variant> {
     let dark = LinearRgba::new(0.04, 0.05, 0.08, 0.34);
     let light = LinearRgba::new(0.90, 0.92, 0.96, 0.45);
+    // Scene-ID strings keep the legacy "strength" word to match this gallery's committed shots
+    // (`examples/frost-gallery/out/*.png`) — renaming them would desync the filenames from the
+    // checked-in reference images.
     vec![
         Variant {
             name: "00-backdrop",
@@ -77,15 +80,15 @@ fn variants() -> Vec<Variant> {
     ]
 }
 
-/// A centered frosted panel over the scene at the given tint and blur strength.
-fn frosted(name: &'static str, tint: LinearRgba, strength: f32) -> Variant {
+/// A centered frosted panel over the scene at the given tint and blur radius.
+fn frosted(name: &'static str, tint: LinearRgba, blur_radius: f32) -> Variant {
     let panel_size = egui::vec2(W as f32 * 0.56, H as f32 * 0.52);
     let center = egui::pos2(W as f32 * 0.5, H as f32 * 0.5);
     Variant {
         name,
         surface: Some(Surface {
             rect: egui::Rect::from_center_size(center, panel_size),
-            strength: BlurStrength::new(strength),
+            blur_radius: BlurRadius::new(blur_radius),
             tint: Tint::new(tint),
             corner_radius: CornerRadius::new(28.0),
             opacity: Opacity::default(),

@@ -13,7 +13,7 @@
 
 use crate::geometry::Region;
 
-/// Upper bound on the separable-Gaussian tap radius, so a huge `BlurStrength` cannot blow up the
+/// Upper bound on the separable-Gaussian tap radius, so a huge `BlurRadius` cannot blow up the
 /// per-fragment loop. Tooltip/dialog blur sits far below this.
 pub const MAX_GAUSSIAN_RADIUS: i32 = 64;
 

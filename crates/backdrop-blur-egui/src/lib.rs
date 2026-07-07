@@ -24,8 +24,7 @@
 //! A frosted [`Surface`] mixes three **independent** knobs — conflating them is the most common
 //! "my glass looks wrong":
 //!
-//! - **[`BlurStrength`]** — the blur *radius* in logical points. How smeared the backdrop is.
-//!   `0` = no blur (a plain tinted pane).
+//! - **[`BlurRadius`]** — in logical points; `0` = no blur (a plain tinted pane).
 //! - **[`Tint`]** — the glass *film* painted over the blur, a linear-light color whose **alpha is
 //!   the film mix** (how much tint shows vs. how much blurred backdrop shows through). A *colored*
 //!   tint composites in color, not black — author it as sRGB with [`Tint::from_srgb_unmultiplied`]
@@ -80,9 +79,7 @@ mod grab_pass;
 
 // Neutral spine — available on both paths: the glass material vocabulary (used in `Surface`) and
 // the shared `Surface` type itself.
-pub use backdrop_blur_core::{
-    BlurStrength, CornerRadius, LinearRgba, Opacity, RepaintPolicy, Tint,
-};
+pub use backdrop_blur_core::{BlurRadius, CornerRadius, LinearRgba, Opacity, RepaintPolicy, Tint};
 pub use surface::Surface;
 
 // Own-loop path re-exports: the wgpu backend (`render_frame` drives it), the egui-wgpu screen

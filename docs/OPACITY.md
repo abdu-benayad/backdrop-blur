@@ -4,7 +4,7 @@
 > **toward transparency as a whole** — the blurred backdrop dissolves back to the untouched destination as
 > opacity → 0. Motivated by a real consumer (abdu-egui-ui's `Scrim`: a modal dialog fades in/out, and the
 > frosted backdrop must fade *with* it). Today there is no such knob: `Tint.alpha` is the film mix (blur vs
-> tint color) and `BlurStrength` is the radius — neither makes the whole surface *present-or-absent*. A
+> tint color) and `BlurRadius` is the blur amount — neither makes the whole surface *present-or-absent*. A
 > consumer that scales those to fake a fade gets a frost that **pops in at full presence** (the composite
 > *replaces* the destination; it does not blend by a master factor). This adds the missing factor.
 
@@ -31,12 +31,12 @@ fade-in.
 
 ## Type & API
 
-- **`Opacity(f32)`** newtype in `backdrop-blur-core` `material.rs`, beside `BlurStrength`/`Tint`/
+- **`Opacity(f32)`** newtype in `backdrop-blur-core` `material.rs`, beside `BlurRadius`/`Tint`/
   `CornerRadius`. Doc comment leads with the disambiguation: *surface-global blend weight — distinct from
   `Tint`'s alpha, which is the film mix (blur vs tint color).* `Opacity::value(self) -> f32`;
   `Default = Opacity(1.0)`; `const FULL = Opacity(1.0)`.
 - **Constructor scrubs non-finite, then two-sided clamps** — the precedent is `LinearRgba`'s **alpha**
-  (a real `[0,1]` clamp, `material.rs:87`), **not** `BlurStrength`/`CornerRadius` (which clamp only the lower
+  (a real `[0,1]` clamp, `material.rs:87`), **not** `BlurRadius`/`CornerRadius` (which clamp only the lower
   bound and accept unbounded-high). A naive `v.clamp(0.0, 1.0)` *propagates* `NaN`, the undebuggable-garbage
   case every constructor here prevents (`finite_or_zero`). So: `Opacity::new(v) = Self(if v.is_finite() {
   v.clamp(0.0, 1.0) } else { 1.0 })` — non-finite falls back to **1.0** (fully present, the
@@ -156,7 +156,7 @@ insight (`effective = coverage·opacity`, identical on both backends, §2d no-ha
 - **Call sites wrong (blocker, API lens):** "two preview examples unchanged" was false — **three** examples
   build `Surface`, none derive `Default`, so all **12** literal sites need the field. Full list enumerated.
 - **Should-fix, folded in:** clamp must scrub non-finite (NaN propagates through `f32::clamp`) → fallback 1.0,
-  precedent is `LinearRgba` alpha not `BlurStrength`; re-export `Opacity` from both `lib.rs` files; amend the
+  precedent is `LinearRgba` alpha not `BlurRadius`; re-export `Opacity` from both `lib.rs` files; amend the
   `composite_params_layout_matches_wgsl` test; disambiguate `Opacity` vs `tint.a` in the doc comment; soften
   the opacity=0 "bit-identical" claim (rests on the `src.a=0` short-circuit) + the no-op-draw perf nit.
 - **Sound, no change:** newtype altitude (peer of Tint, not a field on it), the name `Opacity` (`Coverage` is

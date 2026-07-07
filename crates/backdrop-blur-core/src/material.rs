@@ -17,7 +17,7 @@ use crate::geometry::Scale;
 /// only the GPU resources it keys stay backend-specific.
 ///
 /// The resolution is exposed as [`BlurRequest::physical_blur_radius`], **not** a free
-/// `strength × scale` call: a [`BlurRequest`] carries two independent scales (source vs
+/// `blur_radius × scale` call: a [`BlurRequest`] carries two independent scales (source vs
 /// target), and the blur convolution happens in the *source* texture's pixel space, so the
 /// radius must resolve against `source_region.scale`. Pinning that scale inside the request
 /// makes the wrong one impossible to pass (the same guardrail [`ResolvedMask::from_target`]
@@ -30,11 +30,11 @@ use crate::geometry::Scale;
 /// [`BlurRequest`]: crate::BlurRequest
 /// [`ResolvedMask::from_target`]: crate::ResolvedMask::from_target
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub struct BlurStrength(f32);
+pub struct BlurRadius(f32);
 
-impl BlurStrength {
+impl BlurRadius {
     /// Construct from logical points. Non-finite input (`NaN`/`±∞`) and negatives clamp to `0`,
-    /// so a garbage strength becomes "no blur" rather than a degenerate kernel downstream.
+    /// so a garbage radius becomes "no blur" rather than a degenerate kernel downstream.
     pub fn new(points: f32) -> Self {
         Self(if points.is_finite() {
             points.max(0.0)
@@ -183,13 +183,13 @@ impl CornerRadius {
 
 /// Surface-global **fade coverage** in `[0, 1]` — how *present* the whole frosted surface is,
 /// distinct from [`Tint`]'s alpha (which is the film *mix*, blur vs tint color) and from
-/// [`BlurStrength`] (the radius). It scales the composite's final blend weight: `1.0` is the
+/// [`BlurRadius`] (the blur amount, a length — not a fade). It scales the composite's final blend weight: `1.0` is the
 /// surface fully composited (the default — every existing caller and golden is unchanged), `0.0`
 /// leaves the destination untouched (the surface absent), and a fractional value blends the
 /// frosted result over the destination by that factor. A consumer animating a surface in/out
 /// (a modal scrim fading with its dialog) drives this per frame.
 ///
-/// Two-sided clamp `[0, 1]` (unlike [`BlurStrength`]/[`CornerRadius`], which clamp only the
+/// Two-sided clamp `[0, 1]` (unlike [`BlurRadius`]/[`CornerRadius`], which clamp only the
 /// lower bound) — the precedent is [`LinearRgba`]'s alpha. Non-finite input falls back to `1.0`
 /// (fully present, behavior-preserving), **not** `0.0`: a `NaN` propagates through `f32::clamp`,
 /// and a silently-invisible surface is a worse failure than a silently-opaque one.
@@ -231,27 +231,27 @@ mod tests {
     }
 
     #[test]
-    fn blur_strength_new_clamps_negative_to_zero() {
-        assert_eq!(BlurStrength::new(-3.0).points(), 0.0);
-        assert_eq!(BlurStrength::new(8.0).points(), 8.0);
+    fn blur_radius_new_clamps_negative_to_zero() {
+        assert_eq!(BlurRadius::new(-3.0).points(), 0.0);
+        assert_eq!(BlurRadius::new(8.0).points(), 8.0);
     }
 
     #[test]
-    fn blur_strength_new_scrubs_non_finite_to_zero() {
-        assert_eq!(BlurStrength::new(f32::NAN).points(), 0.0);
-        assert_eq!(BlurStrength::new(f32::INFINITY).points(), 0.0);
-        assert_eq!(BlurStrength::new(f32::NEG_INFINITY).points(), 0.0);
+    fn blur_radius_new_scrubs_non_finite_to_zero() {
+        assert_eq!(BlurRadius::new(f32::NAN).points(), 0.0);
+        assert_eq!(BlurRadius::new(f32::INFINITY).points(), 0.0);
+        assert_eq!(BlurRadius::new(f32::NEG_INFINITY).points(), 0.0);
     }
 
     #[test]
     fn to_physical_radius_multiplies_by_scale() {
-        let r = BlurStrength::new(8.0).to_physical_radius(Scale::new(2.0));
+        let r = BlurRadius::new(8.0).to_physical_radius(Scale::new(2.0));
         assert!(close(r, 16.0));
     }
 
     #[test]
-    fn to_physical_radius_of_zero_strength_is_zero() {
-        let r = BlurStrength::new(0.0).to_physical_radius(Scale::new(3.0));
+    fn to_physical_radius_of_zero_radius_is_zero() {
+        let r = BlurRadius::new(0.0).to_physical_radius(Scale::new(3.0));
         assert!(close(r, 0.0));
     }
 

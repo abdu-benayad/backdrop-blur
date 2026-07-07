@@ -13,7 +13,7 @@ trait all live here, while `wgpu`/`glow` resource types stay out.
 ## The shape of a blur
 
 A caller describes a frosted surface with a `BlurRequest` — *where* the backdrop lives and the
-surface goes (`Region`s in physical pixels), and *what kind of glass* it is (`BlurStrength`, `Tint`,
+surface goes (`Region`s in physical pixels), and *what kind of glass* it is (`BlurRadius`, `Tint`,
 `CornerRadius`). Core resolves the algorithm-agnostic parts (a physical blur radius; a clamped
 `ResolvedMask`); a backend resolves the algorithm-specific parts (kernel offsets, pipelines) and
 does the GPU work.

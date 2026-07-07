@@ -259,7 +259,7 @@ impl GrabPassRenderer {
             let request = BlurRequest {
                 source_region: region.into_region(),
                 target_rect: region.into_region(),
-                strength: surface.strength,
+                blur_radius: surface.blur_radius,
                 tint: surface.tint,
                 corner_radius: surface.corner_radius,
                 opacity: surface.opacity,

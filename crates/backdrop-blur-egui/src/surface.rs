@@ -5,13 +5,13 @@
 //! — not in either feature-gated module — is what lets a grab-pass-only (kiosk) build name a
 //! `Surface` without compiling the wgpu stack.
 
-use backdrop_blur_core::{BlurStrength, CornerRadius, Opacity, RepaintPolicy, Tint};
+use backdrop_blur_core::{BlurRadius, CornerRadius, Opacity, RepaintPolicy, Tint};
 
 /// A frosted surface to composite this frame: an egui-space rectangle (logical points) plus the
 /// glass parameters and a liveness policy. v1 treats the backdrop directly behind the rect as the
 /// blur source (`source_region == target_rect`).
 ///
-/// Fields are public so the grab-pass adapter can read the material (`strength`, `tint`,
+/// Fields are public so the grab-pass adapter can read the material (`blur_radius`, `tint`,
 /// `corner_radius`) straight off the surface inside the paint callback while deriving geometry
 /// from the GL-origin region — the two paths share the *what* (this type) and differ only in the
 /// *where* (top-left request vs bottom-left `GlRegion`).
@@ -19,8 +19,8 @@ use backdrop_blur_core::{BlurStrength, CornerRadius, Opacity, RepaintPolicy, Tin
 pub struct Surface {
     /// Where the surface sits, in egui logical points.
     pub rect: egui::Rect,
-    /// How much blur.
-    pub strength: BlurStrength,
+    /// Blur radius in logical points.
+    pub blur_radius: BlurRadius,
     /// The glass film.
     pub tint: Tint,
     /// How round the corners are.

@@ -64,7 +64,7 @@ backdrop-blur-wgpu      backdrop-blur-glow      two sibling backends, one seam
                                       feature grab-pass          → GrabPassRenderer (→ glow)  [this increment]
 ```
 
-- **core** owns every decision that does not name a GPU type: strength→radius, Gaussian-vs-Kawase selection and the level/threshold/half-pixel math, the UV remap, the rounded-rect mask, the color-encoding *policy*, the error/liveness vocabulary, and (after §15) the algorithm math v1 left in the wgpu crate plus GL-shaped `BlurStage` variants.
+- **core** owns every decision that does not name a GPU type: logical `BlurRadius` (points) → physical pixel radius via `Scale`, Gaussian-vs-Kawase selection and the level/threshold/half-pixel math, the UV remap, the rounded-rect mask, the color-encoding *policy*, the error/liveness vocabulary, and (after §15) the algorithm math v1 left in the wgpu crate plus GL-shaped `BlurStage` variants.
 - **backdrop-blur-glow** owns *everything GL*: cached programs + scratch, the capability probe, a GLSL-ES-3.00 shader set + per-target version header, the grab, the blur passes, the composite, and the GL state save/restore. The **only** crate not `forbid(unsafe_code)`.
 - **backdrop-blur-egui** gains the grab-pass adapter behind a `grab-pass` feature and stays `#![forbid(unsafe_code)]`. Making this crate feature-gated is a **breaking refactor**, not glue — priced in §7/M5.
 
@@ -82,7 +82,7 @@ Unchanged from v1; this is the first real implementation of its glow side.
 - **`GrabPass: BackdropBlur`** (glow-only).
   - `grab_source(ctx, (), &framebuffer, region) -> Result<GrabSource, BlurError>` — **capture the live target by querying `GL_DRAW_FRAMEBUFFER_BINDING` at callback entry** (never trust the incoming binding, which may be a stale scratch FBO, and never assume FB 0), bind it as `GL_READ_FRAMEBUFFER`, then `copyTexSubImage2D` the **clamped** region into a pre-sized grab texture (MSAA-resolve blit first if needed). The composite later draws back into that *same* captured target — so if egui ever renders the frame into a post-process FBO (`pp_fb_extent`), both grab and composite follow the real target automatically rather than assuming the default framebuffer (this is what turns §10's `pp_fb_extent` caveat into handled behavior).
 
-**The coordinate convention (load-bearing — got two reviews wrong before this).** On the glow path the callback derives a **GL bottom-left** `Region` from `info.viewport_in_pixels()` (its `from_bottom_px` field is already GL-origin) and builds the **entire** `BlurRequest` — `target_rect` *and* `source_region` — in bottom-left coords. `Surface::request`'s top-left rect is used only for **orientation-free** resolution (strength, repaint), never to build the composite geometry. Consequences:
+**The coordinate convention (load-bearing — got two reviews wrong before this).** On the glow path the callback derives a **GL bottom-left** `Region` from `info.viewport_in_pixels()` (its `from_bottom_px` field is already GL-origin) and builds the **entire** `BlurRequest` — `target_rect` *and* `source_region` — in bottom-left coords. `Surface::request`'s top-left rect is used only for **orientation-free** resolution (blur_radius, repaint), never to build the composite geometry. Consequences:
 - `grab_source` consumes the bottom-left region directly and performs **no internal flip** — a **deliberate divergence** from the v1 `GrabPass` seam doc (`seam.rs:118-119`, which placed the flip *inside* `grab_source`) and the glow-gate table; **both are updated in the same step** so the trait contract and the design agree. Rationale: `from_bottom_px` already yields GL coords at the call site, so a flip inside `grab_source` would be a *double* flip.
 - `rect_origin`, `source_region`, the SDF, and `backdrop_uv_remap` then all operate in **one consistent bottom-left system** — the grab texture's v=0 row is the framebuffer's bottom row (a `copyTexSubImage2D` from a bottom-left FB), matching `rect_uv.y` increasing upward, so nothing is upside-down and a partially-clipped panel samples the right rows.
 - **The GL-origin space is a TYPE, not a convention (mandated, post-Abdu-review).** The y-flip is this design's documented recurring bug class — two review rounds got it wrong, the v1 seam doc placed the flip wrong, and §14 spends a runtime test guarding it. Paying runtime cost to guard an invariant is the signal to make it *structural*. So a distinct **GL-origin region type** (mechanism left to IMPL — a phantom `Region<Space>` param defaulting to the existing top-left use, or a thin `GlRegion` newtype) is **mandatory, not deferred**: the glow-facing surfaces — `grab_source`'s region, `GlPrepared.target_rect`, and the composite uniforms — accept **only** the GL-origin type. Because both `viewport_in_pixels()` and `clip_rect_in_pixels()` expose `from_bottom_px`, that type is **constructed, never flipped** — *any literal `framebuffer_height − y` flip appearing in the implementation diff is a review red flag*. Cost is near-zero: `GrabPass` is glow-only, so no wgpu churn, and the interval-intersection (clip) math is origin-agnostic. The one IMPL question is threading GL-origin space cleanly from the (core-typed) `BlurRequest` `prepare` consumes into the GL-origin `GlPrepared` it resolves.
@@ -91,7 +91,7 @@ Unchanged from v1; this is the first real implementation of its glow side.
 
 ## 6. Data model — the domain types glow introduces
 
-Reused **unchanged** from core: `BlurRequest`, `ResolvedMask`, `Region` (+ `clip_to`), `Scale`, `Tint`/`LinearRgba`, `BlurStrength`, `CornerRadius`, `BlurError`, `RepaintPolicy`, and (after §15) the algorithm-resolution functions + the extended `BlurStage`. `BlurError::GrabFailed` was reserved for this path.
+Reused **unchanged** from core: `BlurRequest`, `ResolvedMask`, `Region` (+ `clip_to`), `Scale`, `Tint`/`LinearRgba`, `BlurRadius`, `CornerRadius`, `BlurError`, `RepaintPolicy`, and (after §15) the algorithm-resolution functions + the extended `BlurStage`. `BlurError::GrabFailed` was reserved for this path.
 
 New types, all in `backdrop-blur-glow`:
 
@@ -243,7 +243,7 @@ v1 left the **GPU-free** Kawase/Gaussian math inside `backdrop-blur-wgpu/src/cac
 **Step 0, before any glow code:**
 - **Move that math into `backdrop-blur-core`.** Keep only the two **format-coupled** items (`SCRATCH_FORMAT`, `composite_encode_srgb`) in each backend, expressing the *encoding policy* as a core enum (`TargetEncoding`) each backend maps its own format onto.
 - **Extend `BlurStage` in core with GL-shaped variants** (`ShaderCompile`, `ProgramLink`, `Framebuffer`, `VertexArray`) alongside the existing wgpu ones, so glow init failures map honestly (a link failure must not log as `DownsamplePipeline`).
-- **`git mv` the `cache.rs` unit tests verbatim into core** so the green run *is* the proof wgpu's behavior is unchanged; annotate the **`BlurStrength` doc block (`material.rs:7-21`, the "no notion of levels" sentence at `:12`)** in the same commit to record the deliberate reversal — justified because a *second backend now exists*.
+- **`git mv` the `cache.rs` unit tests verbatim into core** so the green run *is* the proof wgpu's behavior is unchanged; annotate the **`BlurRadius` doc block (`material.rs:7-21`, the "no notion of levels" sentence at `:12`)** in the same commit to record the deliberate reversal — justified because a *second backend now exists*.
 
 wgpu is updated to consume from core and stays green at every step.
 
@@ -254,7 +254,7 @@ wgpu is updated to consume from core and stays green at every step.
 **Correction (C3):** there is **no GL blur wired into any `abdu-egui-ui` component today.** `src/widgets/overlay/glass.rs` is a flat pass-through pane; `tooltip_blur_spike.rs` is a standalone `preview`-gated example no component consumes; `glass/DESIGN.md` scopes v1 as flat/safe-only with the real blur deferred. So the next increment is **the first real frosted-Glass component**, not a wiring swap — and it gets **its own design→IMPL→review gate**.
 
 What that increment covers (new design, not this doc):
-- A frosted-Glass component mapping its `(variant, tone, locale)` tokens onto a `Surface { rect, strength, tint, corner_radius, repaint }` — the **only** coupling to this crate. RTL/mirroring stays at the Glass surface layer (the blur is geometry-symmetric).
+- A frosted-Glass component mapping its `(variant, tone, locale)` tokens onto a `Surface { rect, blur_radius, tint, corner_radius, repaint }` — the **only** coupling to this crate. RTL/mirroring stays at the Glass surface layer (the blur is geometry-symmetric).
 - Renderer lifecycle (one `GrabPassRenderer` from `cc.gl` at startup), the **host obligation** (enqueue `frost` *before* the panel's own fill), the fallback-to-flat UX when `cc.gl` is `None` or the context is unsupported, and the repaint/staleness policy.
 - **Deleting `tooltip_blur_spike.rs`** as a superseded example.
 

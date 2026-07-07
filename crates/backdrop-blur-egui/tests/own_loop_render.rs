@@ -9,7 +9,7 @@
 //! never even parsed in a grab-pass-only build.
 #![cfg(all(feature = "image-snapshots", feature = "own-loop"))]
 
-use backdrop_blur_core::{BlurStrength, CornerRadius, LinearRgba, Opacity, RepaintPolicy, Tint};
+use backdrop_blur_core::{BlurRadius, CornerRadius, LinearRgba, Opacity, RepaintPolicy, Tint};
 use backdrop_blur_egui::{FrameInput, OwnLoopRenderer, Surface};
 use backdrop_blur_wgpu::WgpuBlur;
 
@@ -158,7 +158,7 @@ fn own_loop_frosts_a_panel_over_a_real_egui_frame() {
             egui::pos2(EDGE - 50.0, EDGE - 50.0),
             egui::vec2(100.0, 100.0),
         ),
-        strength: BlurStrength::new(12.0),
+        blur_radius: BlurRadius::new(12.0),
         tint: Tint::new(LinearRgba::new(0.0, 0.0, 0.0, 0.12)),
         corner_radius: CornerRadius::new(20.0),
         opacity: Opacity::default(),
