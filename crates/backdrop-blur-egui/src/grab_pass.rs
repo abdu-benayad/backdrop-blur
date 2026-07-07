@@ -202,15 +202,16 @@ impl GrabPassRenderer {
     /// - **Call this *before* painting the surface's foreground.** The callback grabs whatever is in
     ///   the framebuffer at its position; content drawn after it lands on top of the blur, content
     ///   drawn before it gets blurred away. There is no runtime guard — order is on the caller.
-    /// - **Fade via `surface.opacity`, not `ui.multiply_opacity`.** egui's opacity does not reach
-    ///   paint callbacks and silently no-ops on the blur; [`Opacity`] is the supported fade dial.
+    /// - **Fade via `surface.presence`, not `ui.multiply_opacity`.** egui's opacity multiplier does
+    ///   not reach paint callbacks and silently no-ops on the blur; [`Presence`] is the supported
+    ///   fade dial.
     /// - **For a dynamically-sized surface, pass *last frame's* rect** (stashed in egui temp memory):
     ///   the rect is unknown until content lays out, but the frost must be enqueued before it paints.
     /// - After the frame, [`take_frost_outcome`](Self::take_frost_outcome) reports the strongest
     ///   [`FrostOutcome`] any frost reached since the last take (read-and-clear; call once per
     ///   frame, after paint).
     ///
-    /// [`Opacity`]: backdrop_blur_core::Opacity
+    /// [`Presence`]: backdrop_blur_core::Presence
     pub fn frost(&self, ui: &egui::Ui, surface: Surface) {
         // The adapter drives liveness — a stale backdrop cannot be silently forgotten (DESIGN §4.6).
         match surface.repaint {
@@ -262,7 +263,7 @@ impl GrabPassRenderer {
                 blur_radius: surface.blur_radius,
                 tint: surface.tint,
                 corner_radius: surface.corner_radius,
-                opacity: surface.opacity,
+                presence: surface.presence,
             };
             let target = current_draw_framebuffer(gl);
             match guard.frost_region(gl, target, region, framebuffer_size, &request) {

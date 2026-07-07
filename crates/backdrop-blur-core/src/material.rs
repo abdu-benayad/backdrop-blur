@@ -181,9 +181,9 @@ impl CornerRadius {
     }
 }
 
-/// Surface-global **fade coverage** in `[0, 1]` — how *present* the whole frosted surface is,
-/// distinct from [`Tint`]'s alpha (which is the film *mix*, blur vs tint color) and from
-/// [`BlurRadius`] (the blur amount, a length — not a fade). It scales the composite's final blend weight: `1.0` is the
+/// How *present* the whole frosted surface is — the surface-global **fade coverage** in
+/// `[0, 1]`, distinct from [`Tint`]'s alpha (which is the film *mix*, blur vs tint color) and
+/// from [`BlurRadius`] (the blur amount, a length — not a fade). It scales the composite's final blend weight: `1.0` is the
 /// surface fully composited (the default — every existing caller and golden is unchanged), `0.0`
 /// leaves the destination untouched (the surface absent), and a fractional value blends the
 /// frosted result over the destination by that factor. A consumer animating a surface in/out
@@ -194,9 +194,9 @@ impl CornerRadius {
 /// (fully present, behavior-preserving), **not** `0.0`: a `NaN` propagates through `f32::clamp`,
 /// and a silently-invisible surface is a worse failure than a silently-opaque one.
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub struct Opacity(f32);
+pub struct Presence(f32);
 
-impl Opacity {
+impl Presence {
     /// A fully-present surface — the default.
     pub const FULL: Self = Self(1.0);
 
@@ -210,13 +210,13 @@ impl Opacity {
         })
     }
 
-    /// The fade factor in `[0, 1]`.
+    /// The fade coverage in `[0, 1]`.
     pub fn value(self) -> f32 {
         self.0
     }
 }
 
-impl Default for Opacity {
+impl Default for Presence {
     fn default() -> Self {
         Self::FULL
     }
@@ -312,24 +312,24 @@ mod tests {
     }
 
     #[test]
-    fn opacity_new_clamps_into_unit_range() {
-        assert_eq!(Opacity::new(-1.0).value(), 0.0);
-        assert_eq!(Opacity::new(2.0).value(), 1.0);
-        assert!(close(Opacity::new(0.3).value(), 0.3));
+    fn presence_new_clamps_into_unit_range() {
+        assert_eq!(Presence::new(-1.0).value(), 0.0);
+        assert_eq!(Presence::new(2.0).value(), 1.0);
+        assert!(close(Presence::new(0.3).value(), 0.3));
     }
 
     #[test]
-    fn opacity_new_scrubs_non_finite_to_full() {
+    fn presence_new_scrubs_non_finite_to_full() {
         // Non-finite falls back to 1.0 (fully present), NOT 0.0 — a NaN propagates through
         // f32::clamp, and an invisible surface is the worse silent failure.
-        assert_eq!(Opacity::new(f32::NAN).value(), 1.0);
-        assert_eq!(Opacity::new(f32::INFINITY).value(), 1.0);
-        assert_eq!(Opacity::new(f32::NEG_INFINITY).value(), 1.0);
+        assert_eq!(Presence::new(f32::NAN).value(), 1.0);
+        assert_eq!(Presence::new(f32::INFINITY).value(), 1.0);
+        assert_eq!(Presence::new(f32::NEG_INFINITY).value(), 1.0);
     }
 
     #[test]
-    fn opacity_default_and_full_are_one() {
-        assert_eq!(Opacity::default().value(), 1.0);
-        assert_eq!(Opacity::FULL.value(), 1.0);
+    fn presence_default_and_full_are_one() {
+        assert_eq!(Presence::default().value(), 1.0);
+        assert_eq!(Presence::FULL.value(), 1.0);
     }
 }

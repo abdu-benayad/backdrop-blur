@@ -31,7 +31,7 @@ backdrop-blur-egui = { version = "0.1", default-features = false, features = ["g
 
 ```rust,ignore
 use backdrop_blur_egui::{
-    BlurRadius, CornerRadius, GrabPassRenderer, Opacity, RepaintPolicy, Surface, Tint,
+    BlurRadius, CornerRadius, GrabPassRenderer, Presence, RepaintPolicy, Surface, Tint,
 };
 
 // Once, in eframe's creation closure (glow backend):
@@ -43,7 +43,7 @@ let surface = Surface {
     blur_radius: BlurRadius::new(16.0),                 // logical points
     tint: Tint::from_srgb_unmultiplied([255, 255, 255, 40]), // film: alpha = tint vs. blur mix
     corner_radius: CornerRadius::new(12.0),
-    opacity: Opacity::FULL,                            // fade dial — drive per frame, NOT multiply_opacity
+    presence: Presence::FULL,                          // fade dial — drive per frame, NOT multiply_opacity
     repaint: RepaintPolicy::Static,                    // still content behind the glass
 };
 renderer.frost(ui, surface);
@@ -54,7 +54,7 @@ renderer.frost(ui, surface);
 ```
 
 Three contracts the types can't enforce — read them before shipping: **frost before foreground**,
-**fade with `Opacity`** (egui's `multiply_opacity` no-ops on paint callbacks), and for a
+**fade with `Presence`** (egui's `multiply_opacity` no-ops on paint callbacks), and for a
 dynamically-sized surface **pass last frame's rect** (the rect is unknown until content lays out, but
 the frost must enqueue before it paints — stash it in egui temp memory). The crate-root rustdoc
 ("Grab-pass contracts") has the worked detail.
@@ -63,14 +63,14 @@ The crate owns only a surface's *background*. The surface's content, foreground,
 stay the host's: a frosted `Surface` is a post-render composite, never an egui widget, so it adds
 nothing to the AccessKit tree.
 
-## The three dials: blur, tint, opacity
+## The three dials: blur, tint, presence
 
 Independent knobs — conflating them is the most common "my glass looks wrong":
 
 - **`BlurRadius`** — in logical points. `0` = no blur (a plain tinted pane).
 - **`Tint`** — the glass *film* over the blur, a linear-light color whose **alpha is the film mix**
   (how much tint shows vs. how much blurred backdrop shows through).
-- **`Opacity`** — the fade dial. Drive it per frame; do not reach for `multiply_opacity`.
+- **`Presence`** — the fade dial. Drive it per frame; do not reach for `multiply_opacity`.
 
 ## Status
 

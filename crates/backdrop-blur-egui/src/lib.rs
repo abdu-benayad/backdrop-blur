@@ -19,7 +19,7 @@
 //! accessibility stay the host's: a frosted [`Surface`] is a post-render composite, never an egui
 //! widget, so it adds nothing to the AccessKit tree.
 //!
-//! # The three dials: blur, tint, opacity
+//! # The three dials: blur, tint, presence
 //!
 //! A frosted [`Surface`] mixes three **independent** knobs — conflating them is the most common
 //! "my glass looks wrong":
@@ -30,13 +30,13 @@
 //!   tint composites in color, not black — author it as sRGB with [`Tint::from_srgb_unmultiplied`]
 //!   so the linear decode is done for you. Alpha `0` = pure blur, no film; alpha `1` = the film is
 //!   opaque and the blur is invisible under it.
-//! - **[`Opacity`]** — the surface-global *presence* in `[0, 1]`, the whole frosted result blended
-//!   over the destination. This is the **fade dial**: drive it per frame to dissolve glass in/out.
-//!   Default `1.0`.
+//! - **[`Presence`]** — the surface-global fade weight in `[0, 1]`: whether the glass is there at
+//!   all, the whole frosted result blended over the destination. Drive it per frame to dissolve
+//!   glass in/out. Default `1.0`.
 //!
-//! Rule of thumb: blur sets the *texture*, tint-alpha sets the *material*, opacity sets the
-//! *presence*. A barely-tinted heavy blur is clear vibrancy; a high tint-alpha is frosted/opaque
-//! glass; opacity below `1` fades the entire thing.
+//! Rule of thumb: blur sets the *texture*, tint-alpha sets the *material*, presence sets
+//! *whether it's there at all*. A barely-tinted heavy blur is clear vibrancy; a high tint-alpha is
+//! frosted/opaque glass; presence below `1` fades the entire thing.
 //!
 //! # Grab-pass contracts (read before calling `frost`)
 //!
@@ -48,10 +48,10 @@
 //!    paint the surface's own content (text, controls) **after**, so the foreground lands on top of
 //!    the blur. Enqueue it too late and it grabs — and blurs away — your own content. There is no
 //!    runtime guard for this; it is a hard ordering contract.
-//! 2. **Fade with [`Opacity`], not `multiply_opacity`.** egui's `Ui::multiply_opacity` (and the
-//!    `Opacity` style) **do not reach paint callbacks** — the standard fade silently no-ops on the
-//!    blur. To dissolve frost in/out, drive the surface's `opacity` field ([`Opacity`]) per frame
-//!    instead. This is the one egui trap that bites everyone; the [`Opacity`] dial is the supported
+//! 2. **Fade with [`Presence`], not `multiply_opacity`.** egui's `multiply_opacity` style multiplier
+//!    **does not reach paint callbacks** — the standard fade silently no-ops on the blur. To
+//!    dissolve frost in/out, drive the surface's `presence` field ([`Presence`]) per frame instead.
+//!    This is the one egui trap that bites everyone; the [`Presence`] dial is the supported
 //!    escape hatch.
 //! 3. **A dynamically-sized rect needs *last frame's* rect.** In immediate mode the surface's rect
 //!    is only known *after* its content lays out, but the frost must be enqueued *before* the content
@@ -79,7 +79,7 @@ mod grab_pass;
 
 // Neutral spine — available on both paths: the glass material vocabulary (used in `Surface`) and
 // the shared `Surface` type itself.
-pub use backdrop_blur_core::{BlurRadius, CornerRadius, LinearRgba, Opacity, RepaintPolicy, Tint};
+pub use backdrop_blur_core::{BlurRadius, CornerRadius, LinearRgba, Presence, RepaintPolicy, Tint};
 pub use surface::Surface;
 
 // Own-loop path re-exports: the wgpu backend (`render_frame` drives it), the egui-wgpu screen

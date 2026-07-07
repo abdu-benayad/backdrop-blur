@@ -22,7 +22,7 @@
 > are **no longer deferred** — both shipped and are published on crates.io. References below
 > that mark glow / grab-pass as "DEFERRED past v1" describe the original v1 *increment plan*,
 > not the current state. The seam proved out against the divergent backend (see §4.4 / the
-> `seam.rs` "Gate verdict"); `BlurRequest` also gained a sixth field, `opacity` (§4.3).
+> `seam.rs` "Gate verdict"); `BlurRequest` also gained a sixth field, `presence` (§4.3).
 
 ---
 
@@ -161,7 +161,7 @@ the old §14 open list.
       pub blur_radius:   BlurRadius,
       pub tint:          Tint,
       pub corner_radius: CornerRadius,
-      pub opacity:       Opacity,    // surface-global fade [0,1]; default 1.0 (added post-design)
+      pub presence:      Presence,   // surface-global fade [0,1]; default 1.0 (added post-design)
   }
   ```
 

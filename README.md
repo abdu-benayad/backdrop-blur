@@ -28,7 +28,7 @@ backdrop-blur-egui = { version = "0.1", default-features = false, features = ["g
 
 ```rust,ignore
 use backdrop_blur_egui::{
-    BlurRadius, CornerRadius, GrabPassRenderer, Opacity, RepaintPolicy, Surface, Tint,
+    BlurRadius, CornerRadius, GrabPassRenderer, Presence, RepaintPolicy, Surface, Tint,
 };
 
 // Once, in eframe's creation closure (glow backend):
@@ -40,7 +40,7 @@ let surface = Surface {
     blur_radius: BlurRadius::new(16.0),                 // logical points
     tint: Tint::from_srgb_unmultiplied([255, 255, 255, 40]), // film: alpha = tint vs. blur mix
     corner_radius: CornerRadius::new(12.0),
-    opacity: Opacity::FULL,                            // fade dial — drive per frame, NOT multiply_opacity
+    presence: Presence::FULL,                          // fade dial — drive per frame, NOT multiply_opacity
     repaint: RepaintPolicy::Static,                    // still content behind the glass
 };
 renderer.frost(ui, surface);
@@ -51,7 +51,7 @@ renderer.frost(ui, surface);
 ```
 
 Three contracts the types can't enforce — read them before shipping: **frost before foreground**,
-**fade with `Opacity` (egui's `multiply_opacity` no-ops on paint callbacks)**, and for a
+**fade with `Presence` (egui's `multiply_opacity` no-ops on paint callbacks)**, and for a
 dynamically-sized surface **pass last frame's rect** (the rect is unknown until content lays out, but
 the frost must enqueue before it paints — stash it in egui temp memory). The crate-root rustdoc
 ("Grab-pass contracts") has the worked detail.

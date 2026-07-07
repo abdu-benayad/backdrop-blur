@@ -275,7 +275,7 @@ mod tests {
         assert!(COMPOSITE_FRAG.contains("0.0031308"));
         assert!(COMPOSITE_FRAG.contains("12.92"));
         // The premultiplied output contract (DESIGN §2f): encode-then-cover, out_a == the effective
-        // coverage. With the surface-global fade (OPACITY.md), that weight is `coverage * u_opacity`
+        // coverage. With the surface-global fade (PRESENCE.md), that weight is `coverage * u_opacity`
         // folded into both rgb and alpha — `vec4(rgb * a, a)` with `a = coverage * u_opacity`.
         assert!(COMPOSITE_FRAG.contains("coverage * u_opacity"));
         assert!(COMPOSITE_FRAG.contains("rgb * a, a"));

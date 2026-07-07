@@ -33,7 +33,7 @@ impl Surface {
             blur_radius: self.blur_radius,
             tint: self.tint,
             corner_radius: self.corner_radius,
-            opacity: self.opacity,
+            presence: self.presence,
         }
     }
 }
@@ -386,7 +386,7 @@ mod tests {
             blur_radius: BlurRadius::new(8.0),
             tint: Tint::new(backdrop_blur_core::LinearRgba::new(0.0, 0.0, 0.0, 0.1)),
             corner_radius: CornerRadius::new(12.0),
-            opacity: backdrop_blur_core::Opacity::default(),
+            presence: backdrop_blur_core::Presence::default(),
             repaint: RepaintPolicy::Static,
         }
     }

@@ -21,7 +21,7 @@ use std::fs;
 use std::path::Path;
 
 use backdrop_blur_egui::{
-    BlurRadius, CornerRadius, FrameInput, LinearRgba, Opacity, OwnLoopRenderer, RepaintPolicy,
+    BlurRadius, CornerRadius, FrameInput, LinearRgba, OwnLoopRenderer, Presence, RepaintPolicy,
     ScreenDescriptor, Surface, Tint, WgpuBlur,
 };
 
@@ -91,7 +91,7 @@ fn frosted(name: &'static str, tint: LinearRgba, blur_radius: f32) -> Variant {
             blur_radius: BlurRadius::new(blur_radius),
             tint: Tint::new(tint),
             corner_radius: CornerRadius::new(28.0),
-            opacity: Opacity::default(),
+            presence: Presence::default(),
             repaint: RepaintPolicy::Static,
         }),
     }

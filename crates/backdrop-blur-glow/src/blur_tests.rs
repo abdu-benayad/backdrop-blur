@@ -9,7 +9,7 @@
 use super::*;
 use crate::GlowBlur;
 use crate::gl_harness::{headless_gl, read_texture_rgba8};
-use backdrop_blur_core::{BlurRadius, CornerRadius, LinearRgba, Opacity, Region, Scale, Tint};
+use backdrop_blur_core::{BlurRadius, CornerRadius, LinearRgba, Presence, Region, Scale, Tint};
 use glow::HasContext;
 
 const DIM: u32 = 128;
@@ -172,7 +172,7 @@ fn frost(
     corner_radius: f32,
     tint: Tint,
     seed: [f32; 4],
-    opacity: f32,
+    presence: f32,
 ) -> Target {
     let (t_fbo, t_tex) = make_fbo(gl);
     clear_fbo(gl, t_fbo, seed);
@@ -188,7 +188,7 @@ fn frost(
         blur_radius: BlurRadius::new(blur_radius),
         tint,
         corner_radius: CornerRadius::new(corner_radius),
-        opacity: Opacity::new(opacity),
+        presence: Presence::new(presence),
     };
     // The composite viewport is the true screen size the egui adapter holds, passed as the
     // backend's TargetSpec (a missing size would be a compile error, not a silent AA regression).
@@ -710,7 +710,7 @@ fn record_leaves_gl_state_unchanged() {
         blur_radius: BlurRadius::new(8.0),
         tint: Tint::new(LinearRgba::new(0.0, 0.0, 0.0, 0.2)),
         corner_radius: CornerRadius::new(8.0),
-        opacity: Opacity::default(),
+        presence: Presence::default(),
     };
     let prepared = blur
         .prepare(&gl, &(), &source, FramebufferSize([DIM, DIM]), &request)
@@ -838,7 +838,7 @@ fn prepare_is_a_no_op_for_a_fully_offscreen_region() {
         blur_radius: BlurRadius::new(8.0),
         tint: no_tint(),
         corner_radius: CornerRadius::new(0.0),
-        opacity: Opacity::default(),
+        presence: Presence::default(),
     };
     let prepared = blur
         .prepare(&gl, &(), &source, FramebufferSize([DIM, DIM]), &request)
@@ -869,7 +869,7 @@ fn frost_region_reports_clipped_empty_when_the_request_clips_to_nothing() {
         blur_radius: BlurRadius::new(8.0),
         tint: no_tint(),
         corner_radius: CornerRadius::new(0.0),
-        opacity: Opacity::default(),
+        presence: Presence::default(),
     };
     let effect = blur
         .frost_region(
@@ -904,7 +904,7 @@ fn frost_region_reports_composited_for_a_normal_panel() {
         blur_radius: BlurRadius::new(6.0),
         tint: no_tint(),
         corner_radius: CornerRadius::new(0.0),
-        opacity: Opacity::default(),
+        presence: Presence::default(),
     };
     let effect = blur
         .frost_region(
@@ -924,14 +924,14 @@ fn frost_region_reports_composited_for_a_normal_panel() {
     free_fbo(&gl, scene.fbo, scene.tex);
 }
 
-/// The surface-global fade (`Opacity`) is a real linear blend toward the untouched destination:
-/// `out(opacity) == lerp(D, F, opacity)` at a panel-interior pixel (coverage = 1, so the per-pixel
-/// coverage is out of it and the master opacity is the only variable). `opacity = 0` leaves the
+/// The surface-global fade (`Presence`) is a real linear blend toward the untouched destination:
+/// `out(presence) == lerp(D, F, presence)` at a panel-interior pixel (coverage = 1, so the per-pixel
+/// coverage is out of it and the master presence is the only variable). `presence = 0` leaves the
 /// seeded destination untouched; `0.5` is the byte-space midpoint of D and the fully-present F. This
 /// is the premultiplied-path counterpart of the wgpu oracle, proving the glow `rgb*a, a` fold is the
 /// same linear fade.
 #[test]
-fn opacity_fades_the_surface_linearly_toward_the_destination() {
+fn presence_fades_the_surface_linearly_toward_the_destination() {
     let mut gl = headless_gl();
     let mut blur = GlowBlur::new(&gl).expect("new");
     // Destination seed near-black; backdrop bright gray — so the frosted interior F differs from D
@@ -976,24 +976,24 @@ fn opacity_fades_the_surface_linearly_toward_the_destination() {
 
     // Panel interior (panel = [24,24]+80x80), coverage = 1.
     let (cx, cy) = (64, 64);
-    let d = read_texture_rgba8(&gl, t0.tex, cx, cy); // opacity 0 == the destination D
+    let d = read_texture_rgba8(&gl, t0.tex, cx, cy); // presence 0 == the destination D
     let h = read_texture_rgba8(&gl, thalf.tex, cx, cy);
-    let f = read_texture_rgba8(&gl, t1.tex, cx, cy); // opacity 1 == fully-present F
+    let f = read_texture_rgba8(&gl, t1.tex, cx, cy); // presence 1 == fully-present F
 
-    // opacity = 0 leaves the destination untouched (near-black seed).
+    // presence = 0 leaves the destination untouched (near-black seed).
     for (ch, &channel) in d.iter().take(3).enumerate() {
         assert!(
             channel <= 16,
-            "opacity=0 leaves the destination untouched (channel {ch} = {channel})"
+            "presence=0 leaves the destination untouched (channel {ch} = {channel})"
         );
     }
-    // opacity = 0.5 is the linear midpoint between D and F (byte space, where the blend happens).
+    // presence = 0.5 is the linear midpoint between D and F (byte space, where the blend happens).
     for ch in 0..3 {
         let expected = (i32::from(d[ch]) + i32::from(f[ch]) + 1) / 2;
         let got = i32::from(h[ch]);
         assert!(
             (got - expected).abs() <= 3,
-            "opacity=0.5 == lerp(D,F,0.5) at the interior (channel {ch}: D={} F={} expected≈{expected} got={got})",
+            "presence=0.5 == lerp(D,F,0.5) at the interior (channel {ch}: D={} F={} expected≈{expected} got={got})",
             d[ch],
             f[ch]
         );

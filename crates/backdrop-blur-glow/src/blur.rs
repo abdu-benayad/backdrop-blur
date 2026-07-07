@@ -164,7 +164,7 @@ impl BackdropBlur for GlowBlur {
             backdrop_uv_scale,
             mask,
             target_spec.0,
-            request.opacity.value(),
+            request.presence.value(),
         );
 
         Ok(Some(GlPrepared {

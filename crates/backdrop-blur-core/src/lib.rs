@@ -41,6 +41,6 @@ pub use eviction::{RETENTION_FRAMES, evict_decision};
 pub use geometry::{BlurRequest, Region, ResolvedMask, Scale};
 pub use gl_region::GlRegion;
 pub use liveness::RepaintPolicy;
-pub use material::{BlurRadius, CornerRadius, LinearRgba, Opacity, Tint};
+pub use material::{BlurRadius, CornerRadius, LinearRgba, Presence, Tint};
 pub use outcome::FrostEffect;
 pub use seam::{BackdropBlur, GrabPass};

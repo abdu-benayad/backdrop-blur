@@ -9,7 +9,7 @@
 //! foreground text over the frosted background. A slider drives the blur radius live.
 
 use backdrop_blur_egui::{
-    BlurRadius, CornerRadius, GrabPassRenderer, LinearRgba, Opacity, RepaintPolicy, Surface, Tint,
+    BlurRadius, CornerRadius, GrabPassRenderer, LinearRgba, Presence, RepaintPolicy, Surface, Tint,
     glow,
 };
 use egui::{Align2, Color32, FontId, Pos2, Rect, Vec2, pos2, vec2};
@@ -79,7 +79,7 @@ impl eframe::App for FrostApp {
                     // A faint white film over the blur (linear, 10% opacity).
                     tint: Tint::new(LinearRgba::new(1.0, 1.0, 1.0, 0.10)),
                     corner_radius: CornerRadius::new(18.0),
-                    opacity: Opacity::default(),
+                    presence: Presence::default(),
                     // The slider animates the backdrop, so keep it fresh.
                     repaint: RepaintPolicy::Live,
                 },

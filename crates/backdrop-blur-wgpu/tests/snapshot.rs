@@ -9,7 +9,7 @@
 #![cfg(feature = "image-snapshots")]
 
 use backdrop_blur_core::{
-    BackdropBlur, BlurRadius, BlurRequest, CornerRadius, LinearRgba, Opacity, Region, Scale, Tint,
+    BackdropBlur, BlurRadius, BlurRequest, CornerRadius, LinearRgba, Presence, Region, Scale, Tint,
 };
 use backdrop_blur_wgpu::{SourceColorSpace, SourceView, WgpuBlur};
 
@@ -160,7 +160,7 @@ fn frost_and_read(
     backdrop: &wgpu::Texture,
     blur_radius: f32,
     tint: Tint,
-    opacity: f32,
+    presence: f32,
 ) -> Vec<u8> {
     let target = device.create_texture(&wgpu::TextureDescriptor {
         label: Some("target"),
@@ -187,7 +187,7 @@ fn frost_and_read(
         blur_radius: BlurRadius::new(blur_radius),
         tint,
         corner_radius: CornerRadius::new(24.0),
-        opacity: Opacity::new(opacity),
+        presence: Presence::new(presence),
     };
     let source = SourceView {
         view: backdrop.create_view(&wgpu::TextureViewDescriptor::default()),
@@ -332,7 +332,7 @@ fn frosted_panel_blurs_the_backdrop_inside_the_masked_rect() {
         blur_radius: BlurRadius::new(10.0),
         tint: Tint::new(LinearRgba::new(0.0, 0.0, 0.0, 0.15)), // faint darkening film
         corner_radius: CornerRadius::new(24.0),
-        opacity: Opacity::default(),
+        presence: Presence::default(),
     };
 
     let source = SourceView {
@@ -545,13 +545,13 @@ fn translucent_panel_edge_has_no_halo() {
     assert_no_edge_halo(&out, 30, 90);
 }
 
-/// The surface-global fade (`Opacity`) is a real linear blend toward the untouched destination:
-/// `out(opacity) == lerp(D, F, opacity)` where `D` is the destination (the seeded backdrop) and
-/// `F` is the fully-present (opacity=1) composite. Sampled at the panel interior (coverage=1), so
-/// the per-pixel coverage is out of it and the only variable is the master opacity — the corrected
-/// oracle (the draft's `0.5*coverage` double-applied coverage). `opacity=0` must leave `D` untouched.
+/// The surface-global fade (`Presence`) is a real linear blend toward the untouched destination:
+/// `out(presence) == lerp(D, F, presence)` where `D` is the destination (the seeded backdrop) and
+/// `F` is the fully-present (presence=1) composite. Sampled at the panel interior (coverage=1), so
+/// the per-pixel coverage is out of it and the only variable is the master presence — the corrected
+/// oracle (the draft's `0.5*coverage` double-applied coverage). `presence=0` must leave `D` untouched.
 #[test]
-fn opacity_fades_the_surface_linearly_toward_the_destination() {
+fn presence_fades_the_surface_linearly_toward_the_destination() {
     let (device, queue) = software_device();
     let backdrop = backdrop_texture(&device, &queue);
     let tint = Tint::new(LinearRgba::new(0.0, 0.0, 0.0, 0.2)); // a darkening film, so F != D
@@ -562,18 +562,18 @@ fn opacity_fades_the_surface_linearly_toward_the_destination() {
     let full = frost_and_read(&device, &queue, &backdrop, blur_radius, tint, 1.0);
     let dest = read_back(&device, &queue, &backdrop); // D: the untouched destination
 
-    // opacity = 0 leaves the destination untouched (the surface is absent).
+    // presence = 0 leaves the destination untouched (the surface is absent).
     let (cx, cy) = (100, 100); // panel interior (panel = [50,50]+100x100), coverage = 1
     for c in 0..4 {
         let d = dest[((cy * DIM + cx) * 4) as usize + c];
         let o0 = pixel(&out0, cx, cy)[c];
         assert!(
             (i32::from(d) - i32::from(o0)).abs() <= 1,
-            "opacity=0 must equal the destination at the interior (channel {c}: D={d} out0={o0})"
+            "presence=0 must equal the destination at the interior (channel {c}: D={d} out0={o0})"
         );
     }
 
-    // opacity = 0.5 is the linear midpoint between D (out0) and F (full): out_half ≈ lerp(D, F, 0.5).
+    // presence = 0.5 is the linear midpoint between D (out0) and F (full): out_half ≈ lerp(D, F, 0.5).
     for c in 0..4 {
         let d = i32::from(pixel(&out0, cx, cy)[c]);
         let f = i32::from(pixel(&full, cx, cy)[c]);
@@ -581,7 +581,7 @@ fn opacity_fades_the_surface_linearly_toward_the_destination() {
         let got = i32::from(pixel(&half, cx, cy)[c]);
         assert!(
             (got - expected).abs() <= 2,
-            "opacity=0.5 must be lerp(D,F,0.5) at the interior (channel {c}: D={d} F={f} \
+            "presence=0.5 must be lerp(D,F,0.5) at the interior (channel {c}: D={d} F={f} \
              expected≈{expected} got={got})"
         );
     }
@@ -620,7 +620,7 @@ fn scratch_cache_evicts_old_sizes_instead_of_leaking() {
             blur_radius: BlurRadius::new(6.0),
             tint: Tint::new(LinearRgba::new(1.0, 1.0, 1.0, 0.1)),
             corner_radius: CornerRadius::new(8.0),
-            opacity: Opacity::new(1.0),
+            presence: Presence::new(1.0),
         };
         let _prepared = blur
             .prepare(
