@@ -125,7 +125,7 @@ impl GlowBlur {
     /// link the programs under the right shader dialect, and create the shared VAO. On any failure
     /// the partial GL state is cleaned up before returning.
     pub fn new(gl: &glow::Context) -> Result<Self, BlurError> {
-        let profile = GlProfile::probe(gl);
+        let profile = GlProfile::probe(gl)?;
         let programs = Programs::new(gl, &profile)?;
         // SAFETY: `gl` is current; `create_vertex_array` returns a fresh VAO or an error string,
         // taking no caller pointers.

@@ -7,6 +7,7 @@
 //! format** ([`RenderableFloat`]) decides whether the linear-HDR scratch is `RGBA16F` or falls
 //! back to `sRGB8_ALPHA8` on a WebGL2/GLES context lacking `EXT_color_buffer_float` (DESIGN §9).
 
+use backdrop_blur_core::BlurError;
 use glow::HasContext;
 
 /// The GLSL dialect the shaders compile under — desktop vs embedded, which pick the `#version`
@@ -60,8 +61,10 @@ pub struct GlProfile {
 }
 
 impl GlProfile {
-    /// Read the capabilities off a **live, current** GL context.
-    pub fn probe(gl: &glow::Context) -> Self {
+    /// Read the capabilities off a **live, current** GL context. Returns
+    /// [`BlurError::UnsupportedContext`] when the context's `GL_VERSION` names an API level below
+    /// the backend's minimum (desktop GL 3.3, GLES 3.0, WebGL 2.0).
+    pub fn probe(gl: &glow::Context) -> Result<Self, BlurError> {
         // SAFETY: `gl` is a live, current GL context (the backend's construction-time contract —
         // probe runs only from the host's eframe/test context while it is current). These are
         // pure state queries: `get_parameter_string`/`get_parameter_i32` read driver strings and
@@ -83,12 +86,100 @@ impl GlProfile {
     }
 }
 
+/// The API family a `GL_VERSION` string names — the *flavor* half of classification, deliberately
+/// independent of the version-number parse (see the invariant note in [`classify`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GlFlavor {
+    /// Desktop OpenGL — a bare `"major.minor …"` version string.
+    Desktop,
+    /// OpenGL ES (`"OpenGL ES major.minor …"`, including the `"OpenGL ES-CM …"` common profile).
+    Embedded,
+    /// WebGL (`"WebGL major.minor (…)"`) — checked before `OpenGL ES` because the WebGL2 string
+    /// embeds a GLES parenthetical.
+    WebGl,
+}
+
+impl GlFlavor {
+    /// The minimum `(major, minor)` the grab-pass backend requires for this flavor: desktop GL
+    /// 3.3, GLES 3.0, WebGL 2.0 (the contexts whose dialects the shaders are written for).
+    fn minimum(self) -> (u32, u32) {
+        match self {
+            GlFlavor::Desktop => (3, 3),
+            GlFlavor::Embedded => (3, 0),
+            GlFlavor::WebGl => (2, 0),
+        }
+    }
+
+    /// The family name a [`BlurError::UnsupportedContext`] detail uses for this flavor.
+    fn family_name(self) -> &'static str {
+        match self {
+            GlFlavor::Desktop => "OpenGL",
+            GlFlavor::Embedded => "OpenGL ES",
+            GlFlavor::WebGl => "WebGL",
+        }
+    }
+}
+
+/// The flavor of a `GL_VERSION` string, by substring precedence: `"WebGL"` first (the WebGL2
+/// string `"WebGL 2.0 (OpenGL ES 3.0 …)"` also contains `"OpenGL ES"`), then `"OpenGL ES"`, else
+/// desktop.
+fn flavor_of(version: &str) -> GlFlavor {
+    if version.contains("WebGL") {
+        GlFlavor::WebGl
+    } else if version.contains("OpenGL ES") {
+        GlFlavor::Embedded
+    } else {
+        GlFlavor::Desktop
+    }
+}
+
+/// The first `major.minor` numeric token anywhere in a `GL_VERSION` string: `"4.6.0 NVIDIA …"` →
+/// `(4, 6)`, `"OpenGL ES 3.0 Mesa"` → `(3, 0)`, `"WebGL 2.0 (OpenGL ES 3.0 …)"` → `(2, 0)`,
+/// `"OpenGL ES-CM 1.1"` → `(1, 1)`. `None` when no such token exists — a spec-violating driver
+/// string; the caller then skips the version gate rather than guessing.
+fn parse_major_minor(version: &str) -> Option<(u32, u32)> {
+    version
+        .split(|c: char| !c.is_ascii_digit() && c != '.')
+        .find_map(|token| {
+            let (major, rest) = token.split_once('.')?;
+            let minor = rest.split_once('.').map_or(rest, |(m, _)| m);
+            Some((major.parse().ok()?, minor.parse().ok()?))
+        })
+}
+
 /// Classify a context from its `GL_VERSION` string, extension set, and sample count — **pure**, so
 /// every branch is Tier-0 testable. The GLSL version is not an input: the dialect follows directly
-/// from whether the context is embedded (`OpenGL ES` in the version string, which also covers a
-/// WebGL2 `"WebGL 2.0 (OpenGL ES 3.0 …)"` string), and the `#version` header is then fixed.
-pub fn classify(version: &str, extensions: &[&str], samples: i32) -> GlProfile {
-    let embedded = version.contains("OpenGL ES");
+/// from the string's flavor (`"WebGL"` / `"OpenGL ES"` / desktop, see [`flavor_of`]), and the
+/// `#version` header is then fixed. Returns [`BlurError::UnsupportedContext`] when the string
+/// names an API level below the backend's minimum (desktop GL 3.3, GLES 3.0, WebGL 2.0), so a
+/// too-old context fails at construction with the real diagnosis instead of dying later as an
+/// unrelated shader-compile error.
+pub fn classify(version: &str, extensions: &[&str], samples: i32) -> Result<GlProfile, BlurError> {
+    // INVARIANT: flavor and version number are two independent decisions, deliberately. A
+    // malformed GL_VERSION string can degrade the *gate* (the number fails to parse and the gate
+    // is skipped, below) but can never flip the *shader dialect* — a dialect flip would send
+    // `#version 140` to a WebGL2 context, resurfacing the problem as an unrelated shader-compile
+    // error (the wrong-diagnosis bug this gate exists to kill).
+    let flavor = flavor_of(version);
+    // Gate: a below-minimum context is rejected here, at construction. A parseable flavor whose
+    // number does NOT parse proceeds UNGATED under the flavor-correct dialect: such a string
+    // violates the GL spec's version format, so it comes from an exotic driver, and refusing a
+    // driver that may work would be a regression. The residual — an old such driver still dying
+    // as a shader-compile error — is exactly today's behavior.
+    if let Some((major, minor)) = parse_major_minor(version) {
+        let (req_major, req_minor) = flavor.minimum();
+        if (major, minor) < (req_major, req_minor) {
+            let family = flavor.family_name();
+            return Err(BlurError::UnsupportedContext {
+                detail: format!(
+                    "the grab-pass backend requires {family} {req_major}.{req_minor} or newer, found \
+                     {family} {major}.{minor} (GL_VERSION \"{version}\")"
+                ),
+            });
+        }
+    }
+    // Embedded (GLES ∪ WebGL) drives the shader class and the float-format fallback below.
+    let embedded = matches!(flavor, GlFlavor::Embedded | GlFlavor::WebGl);
     let shader_class = if embedded {
         ShaderClass::Es300
     } else {
@@ -116,12 +207,12 @@ pub fn classify(version: &str, extensions: &[&str], samples: i32) -> GlProfile {
         "the sRGB8_ALPHA8 fallback is color-correct only on embedded (GLES/WebGL2) contexts, where \
          sRGB encode-on-write is automatic; a desktop GL context must resolve to RGBA16F"
     );
-    GlProfile {
+    Ok(GlProfile {
         shader_class,
         embedded,
         renderable_float,
         samples: samples.max(0),
-    }
+    })
 }
 
 #[cfg(test)]
@@ -130,7 +221,7 @@ mod tests {
 
     #[test]
     fn desktop_gl_is_not_embedded_and_renders_rgba16f() {
-        let p = classify("4.6.0 NVIDIA 535.288.01", &[], 0);
+        let p = classify("4.6.0 NVIDIA 535.288.01", &[], 0).expect("classify");
         assert_eq!(p.shader_class, ShaderClass::GlDesktop);
         assert!(!p.embedded);
         // Desktop GL renders RGBA16F with no extension needed.
@@ -139,7 +230,7 @@ mod tests {
 
     #[test]
     fn gles3_without_the_float_extension_falls_back_to_srgb8() {
-        let p = classify("OpenGL ES 3.0 Mesa", &[], 0);
+        let p = classify("OpenGL ES 3.0 Mesa", &[], 0).expect("classify");
         assert_eq!(p.shader_class, ShaderClass::Es300);
         assert!(p.embedded);
         assert_eq!(p.renderable_float, RenderableFloat::Srgb8Rgba8);
@@ -147,9 +238,10 @@ mod tests {
 
     #[test]
     fn gles3_with_the_float_extension_renders_rgba16f() {
-        let p = classify("OpenGL ES 3.2 NVIDIA", &["EXT_color_buffer_float"], 0);
+        let p = classify("OpenGL ES 3.2 NVIDIA", &["EXT_color_buffer_float"], 0).expect("classify");
         assert_eq!(p.renderable_float, RenderableFloat::Rgba16F);
-        let prefixed = classify("OpenGL ES 3.2 NVIDIA", &["GL_EXT_color_buffer_float"], 0);
+        let prefixed =
+            classify("OpenGL ES 3.2 NVIDIA", &["GL_EXT_color_buffer_float"], 0).expect("classify");
         assert_eq!(prefixed.renderable_float, RenderableFloat::Rgba16F);
     }
 
@@ -160,7 +252,8 @@ mod tests {
             "WebGL 2.0 (OpenGL ES 3.0 Chromium)",
             &["EXT_color_buffer_float"],
             0,
-        );
+        )
+        .expect("classify");
         assert_eq!(p.shader_class, ShaderClass::Es300);
         assert!(p.embedded);
         assert_eq!(p.renderable_float, RenderableFloat::Rgba16F);
@@ -173,7 +266,7 @@ mod tests {
         // encode-on-write is automatic. A desktop string — with OR without the float extension —
         // must resolve to RGBA16F, never the fallback.
         for ext in [vec![], vec!["EXT_color_buffer_float"]] {
-            let p = classify("4.6.0 NVIDIA 535.288.01", &ext, 0);
+            let p = classify("4.6.0 NVIDIA 535.288.01", &ext, 0).expect("classify");
             assert!(!p.embedded);
             assert_eq!(p.renderable_float, RenderableFloat::Rgba16F);
         }
@@ -181,8 +274,97 @@ mod tests {
 
     #[test]
     fn samples_pass_through_clamped_non_negative() {
-        assert_eq!(classify("4.6.0", &[], 4).samples, 4);
+        assert_eq!(classify("4.6.0", &[], 4).expect("classify").samples, 4);
         // A driver returning -1 (no MSAA query support) clamps to 0 (no resolve).
-        assert_eq!(classify("4.6.0", &[], -1).samples, 0);
+        assert_eq!(classify("4.6.0", &[], -1).expect("classify").samples, 0);
+    }
+
+    #[test]
+    fn classify_rejects_gles2_naming_requirement_and_raw_string() {
+        let err = classify("OpenGL ES 2.0 Mesa 20.0", &[], 0)
+            .expect_err("GLES 2.0 is below the 3.0 minimum");
+        let BlurError::UnsupportedContext { detail } = err else {
+            panic!("expected UnsupportedContext, got {err:?}");
+        };
+        assert!(
+            detail.contains("OpenGL ES 3.0"),
+            "detail names the requirement: {detail}"
+        );
+        assert!(
+            detail.contains("\"OpenGL ES 2.0 Mesa 20.0\""),
+            "detail quotes the raw version string: {detail}"
+        );
+    }
+
+    #[test]
+    fn classify_rejects_webgl1() {
+        let err = classify("WebGL 1.0 (OpenGL ES 2.0 Chromium)", &[], 0)
+            .expect_err("WebGL 1.0 is below 2.0");
+        assert!(matches!(err, BlurError::UnsupportedContext { .. }));
+    }
+
+    #[test]
+    fn classify_rejects_desktop_gl_2_1() {
+        let err =
+            classify("2.1 Mesa 10.1", &[], 0).expect_err("desktop GL 2.1 is below the 3.3 minimum");
+        assert!(matches!(err, BlurError::UnsupportedContext { .. }));
+    }
+
+    #[test]
+    fn classify_rejects_gles_common_profile_1_1() {
+        // "OpenGL ES-CM 1.1" still contains "OpenGL ES" (embedded flavor) and 1.1 is extractable,
+        // so this is a rejection case, not an ungated tolerance case.
+        let err =
+            classify("OpenGL ES-CM 1.1", &[], 0).expect_err("GLES-CM 1.1 is below the 3.0 minimum");
+        assert!(matches!(err, BlurError::UnsupportedContext { .. }));
+    }
+
+    #[test]
+    fn classify_accepts_desktop_gl_at_the_3_3_boundary() {
+        let p = classify("3.3.0 NVIDIA 535.288.01", &[], 0).expect("desktop GL 3.3 is the minimum");
+        assert_eq!(p.shader_class, ShaderClass::GlDesktop);
+        assert!(!p.embedded);
+    }
+
+    #[test]
+    fn classify_accepts_gles_at_the_3_0_boundary() {
+        let p = classify("OpenGL ES 3.0 Mesa", &[], 0).expect("GLES 3.0 is the minimum");
+        assert_eq!(p.shader_class, ShaderClass::Es300);
+        assert!(p.embedded);
+    }
+
+    #[test]
+    fn classify_accepts_webgl_at_the_2_0_boundary() {
+        let p = classify("WebGL 2.0 (OpenGL ES 3.0 Chromium)", &[], 0)
+            .expect("WebGL 2.0 is the minimum");
+        assert!(p.embedded);
+        assert_eq!(p.shader_class, ShaderClass::Es300);
+    }
+
+    #[test]
+    fn classify_accepts_bare_webgl_2_0_keeping_the_embedded_dialect() {
+        // The flavor decision survives a missing GLES parenthetical: "WebGL" alone is enough to
+        // pin the embedded dialect.
+        let p = classify("WebGL 2.0", &[], 0).expect("bare WebGL 2.0 is the minimum");
+        assert!(p.embedded);
+        assert_eq!(p.shader_class, ShaderClass::Es300);
+    }
+
+    #[test]
+    fn classify_passes_a_numberless_string_ungated_as_desktop() {
+        // No extractable major.minor: the gate is skipped (spec-violating driver), never guessed.
+        let p = classify("Weird Custom Driver", &[], 0).expect("numberless strings pass ungated");
+        assert_eq!(p.shader_class, ShaderClass::GlDesktop);
+        assert!(!p.embedded);
+    }
+
+    #[test]
+    fn classify_keeps_the_embedded_dialect_when_the_number_is_unparseable() {
+        // A malformed string can degrade the gate but never flip the dialect: an embedded-flavored
+        // string with no extractable number must stay Es300, never fall back to `#version 140`.
+        let p =
+            classify("OpenGL ES Mesa", &[], 0).expect("numberless embedded strings pass ungated");
+        assert!(p.embedded);
+        assert_eq!(p.shader_class, ShaderClass::Es300);
     }
 }
