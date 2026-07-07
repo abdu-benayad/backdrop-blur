@@ -28,6 +28,7 @@ mod geometry;
 mod gl_region;
 mod liveness;
 mod material;
+mod outcome;
 mod seam;
 
 pub use algorithm::{
@@ -41,4 +42,5 @@ pub use geometry::{BlurRequest, Region, ResolvedMask, Scale};
 pub use gl_region::GlRegion;
 pub use liveness::RepaintPolicy;
 pub use material::{BlurStrength, CornerRadius, LinearRgba, Opacity, Tint};
+pub use outcome::FrostEffect;
 pub use seam::{BackdropBlur, GrabPass};

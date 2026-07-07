@@ -152,7 +152,8 @@ impl GrabPassRenderer {
             let target = current_draw_framebuffer(gl);
             match guard.frost_region(gl, target, region, framebuffer_size, &request) {
                 // Recovered (or never failed) — re-arm the once-per-episode failure warning below.
-                Ok(()) => warned.store(false, Ordering::Relaxed),
+                // Any `FrostEffect` re-arms (composited or clipped-empty); task 02 widens this.
+                Ok(_) => warned.store(false, Ordering::Relaxed),
                 // A paint callback cannot propagate an error; the frost is best-effort. Warn ONCE per
                 // failure episode (DESIGN §7): under RepaintPolicy::Live this runs every frame, so an
                 // unthrottled warn floods a kiosk log. The format! runs only on the first bad frame.

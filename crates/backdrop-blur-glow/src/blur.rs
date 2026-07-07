@@ -24,8 +24,8 @@ use crate::composite::{self, CompositeParams};
 use crate::scratch::GlScratch;
 use crate::{FramebufferSize, GlowBlur, GrabSource};
 use backdrop_blur_core::{
-    BackdropBlur, BlurError, BlurRequest, GlRegion, GrabPass, PingPongKey, ResolvedMask,
-    backdrop_uv_remap, kawase_halfpixel, kawase_level_size, resolve_gaussian,
+    BackdropBlur, BlurError, BlurRequest, FrostEffect, GlRegion, GrabPass, PingPongKey,
+    ResolvedMask, backdrop_uv_remap, kawase_halfpixel, kawase_level_size, resolve_gaussian,
     resolve_kawase_levels, use_dual_kawase,
 };
 use glow::HasContext;
@@ -221,7 +221,8 @@ impl GlowBlur {
     /// `target` is the live draw framebuffer ([`current_draw_framebuffer`](crate::current_draw_framebuffer)):
     /// both the grab read source (what the host just rendered) and the composite destination.
     /// `framebuffer_size` is the **true** screen size in physical px (the composite viewport); the
-    /// adapter holds it. Returns `Ok(())` doing nothing when the region clips to nothing.
+    /// adapter holds it. Returns [`FrostEffect::ClippedEmpty`] doing nothing when the region clips
+    /// to nothing (the seam's `prepare → Ok(None)` no-op, surfaced instead of swallowed).
     pub fn frost_region(
         &mut self,
         gl: &glow::Context,
@@ -229,11 +230,14 @@ impl GlowBlur {
         region: GlRegion,
         framebuffer_size: crate::FramebufferSize,
         request: &BlurRequest,
-    ) -> Result<(), BlurError> {
+    ) -> Result<FrostEffect, BlurError> {
         let source = self.grab_source(gl, &(), &target, region)?;
         match self.prepare(gl, &(), &source, framebuffer_size, request)? {
-            Some(prepared) => self.record_shared(gl, &target, &prepared),
-            None => Ok(()),
+            Some(prepared) => {
+                self.record_shared(gl, &target, &prepared)?;
+                Ok(FrostEffect::Composited)
+            }
+            None => Ok(FrostEffect::ClippedEmpty),
         }
     }
 

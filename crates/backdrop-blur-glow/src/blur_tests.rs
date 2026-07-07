@@ -851,6 +851,79 @@ fn prepare_is_a_no_op_for_a_fully_offscreen_region() {
     free_fbo(&gl, scene.fbo, scene.tex);
 }
 
+/// The fused shared-context entry surfaces the seam's `prepare → Ok(None)` no-op as
+/// [`FrostEffect::ClippedEmpty`] instead of swallowing it: a valid grab whose request then clips
+/// to nothing composites nothing and says so.
+#[test]
+fn frost_region_reports_clipped_empty_when_the_request_clips_to_nothing() {
+    let gl = headless_gl();
+    let mut blur = GlowBlur::new(&gl).expect("new");
+    let scene = flat_backdrop(&gl, [0.5, 0.5, 0.5, 1.0]);
+    // The grab region is in-bounds (the grab succeeds); the request's source region is fully
+    // offscreen, so `prepare` inside `frost_region` returns `Ok(None)`.
+    let grab = GlRegion::from_bottom_px([0, 0], [16, 16], Scale::new(1.0));
+    let offscreen = panel([DIM, DIM], [10, 10]);
+    let request = BlurRequest {
+        source_region: offscreen,
+        target_rect: offscreen,
+        strength: BlurStrength::new(8.0),
+        tint: no_tint(),
+        corner_radius: CornerRadius::new(0.0),
+        opacity: Opacity::default(),
+    };
+    let effect = blur
+        .frost_region(
+            &gl,
+            Some(scene.fbo),
+            grab,
+            FramebufferSize([DIM, DIM]),
+            &request,
+        )
+        .expect("frost_region ok");
+    assert_eq!(
+        effect,
+        FrostEffect::ClippedEmpty,
+        "a request that clips to nothing must report ClippedEmpty, not a silent no-op"
+    );
+    blur.destroy(&gl);
+    free_fbo(&gl, scene.fbo, scene.tex);
+}
+
+/// The fused entry reports [`FrostEffect::Composited`] for a normal in-bounds panel — the
+/// positive half of the `FrostEffect` contract (pixel-level proofs live in the readback tests).
+#[test]
+fn frost_region_reports_composited_for_a_normal_panel() {
+    let gl = headless_gl();
+    let mut blur = GlowBlur::new(&gl).expect("new");
+    let scene = split_backdrop(&gl, 64, [1.0, 0.0, 0.0, 1.0], [0.0, 0.0, 1.0, 1.0]);
+    let p = panel([32, 32], [64, 64]);
+    let grab = GlRegion::from_bottom_px(p.origin, p.size, Scale::new(1.0));
+    let request = BlurRequest {
+        source_region: p,
+        target_rect: p,
+        strength: BlurStrength::new(6.0),
+        tint: no_tint(),
+        corner_radius: CornerRadius::new(0.0),
+        opacity: Opacity::default(),
+    };
+    let effect = blur
+        .frost_region(
+            &gl,
+            Some(scene.fbo),
+            grab,
+            FramebufferSize([DIM, DIM]),
+            &request,
+        )
+        .expect("frost_region ok");
+    assert_eq!(
+        effect,
+        FrostEffect::Composited,
+        "an in-bounds panel must report Composited"
+    );
+    blur.destroy(&gl);
+    free_fbo(&gl, scene.fbo, scene.tex);
+}
+
 /// The surface-global fade (`Opacity`) is a real linear blend toward the untouched destination:
 /// `out(opacity) == lerp(D, F, opacity)` at a panel-interior pixel (coverage = 1, so the per-pixel
 /// coverage is out of it and the master opacity is the only variable). `opacity = 0` leaves the
