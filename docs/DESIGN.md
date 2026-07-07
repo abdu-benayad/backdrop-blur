@@ -168,10 +168,11 @@ the old §14 open list.
 ### 4.4 The seam — a two-phase trait (M1/M2/M3/S6)
 
 One trait, implemented once per backend. It is split into **`prepare` (uploads + allocation, holds
-device + queue) and `record` (command recording, holds only the encoder + target)** because the GPU
-backends demand it: **wgpu** uploads uniforms/textures through the **Queue** (not the encoder), so the
-upload phase needs the queue and the record phase needs the encoder; **glow** is immediate-mode
-(`prepare` = grab + upload via the context, `record` = draws). The split keeps each phase honest about
+device + queue) and `record` (command recording, holds only the command sink + target)** because the GPU
+backends demand it: **wgpu** uploads uniforms/textures through the **Queue** (not its `CommandEncoder`),
+so the upload phase needs the queue and the record phase needs only the command sink; **glow** is
+immediate-mode (`prepare` = grab + upload via the context, `record` = draws). The split keeps each
+phase honest about
 the resources it actually holds, and leaves the door open for any future host whose render lifecycle is
 itself two-phase. The grab-pass producer lives in a **separate `GrabPass` trait** (below) that only
 grab-pass backends implement, so the own-loop wgpu backend never has to stub a `grab_source` it cannot
@@ -188,7 +189,7 @@ model). Static dispatch, monomorphised.
 pub trait BackdropBlur {
     type Device;        // wgpu::Device         | glow::Context
     type Queue;         // wgpu::Queue          | ()            (glow uploads via Device in prepare)
-    type Encoder;       // wgpu::CommandEncoder | glow::Context (the immediate-mode draw handle)
+    type CommandSink;   // wgpu::CommandEncoder | glow::Context (the immediate-mode draw handle)
     type SourceTexture; // wgpu::TextureView    | glow::Texture     (sampleable backdrop)
     type Target;        // wgpu::TextureView    | glow framebuffer  (composite destination)
     type TargetSpec;    // wgpu::TextureFormat  | FramebufferSize — the static facts about the
@@ -215,7 +216,7 @@ pub trait BackdropBlur {
         request: &BlurRequest,
     ) -> Result<Option<Self::Prepared>, BlurError>;
 
-    /// Phase 2 — has only the encoder + target. Records down → up → composite for a prior
+    /// Phase 2 — has only the command sink + target. Records down → up → composite for a prior
     /// `prepare` in the same frame, **consuming the handle** (as-built: recording the same
     /// surface twice is a use-after-move compile error, not a prose rule). `source != target`
     /// is a contract (S2); wgpu forbids sampling the texture it writes. The immediate-mode
@@ -223,7 +224,7 @@ pub trait BackdropBlur {
     /// so it leaves state as found (§10).
     fn record(
         &self,
-        encoder: &mut Self::Encoder,
+        sink: &mut Self::CommandSink,
         target: &Self::Target,
         prepared: Self::Prepared,
     ) -> Result<(), BlurError>;
@@ -400,7 +401,7 @@ Iced was a candidate second toolkit; it is **dropped from the plan** for two ind
    `iced_wgpu` hook exists**. So even that path was unproven.
 
 The seam loses nothing by this: it never depended on Iced specifics, and the two-phase prepare/record
-shape stands on the wgpu Queue/Encoder split and glow's immediate mode alone (§4.4). A future toolkit
+shape stands on wgpu's Queue/CommandEncoder split and glow's immediate mode alone (§4.4). A future toolkit
 that *does* expose a sampleable-backdrop hook drops in as an additive adapter crate.
 
 ## 8. Algorithm (summary; full treatment in `NATIVE_BLUR_RESEARCH.md`)
@@ -490,7 +491,7 @@ that *does* expose a sampleable-backdrop hook drops in as an additive adapter cr
 
 1. **`backdrop-blur-core`** — the two-phase seam trait + vocabulary + error + liveness + pure unit tests.
    **Before freezing the trait:** the IMPL doc sketches the `GlowBlur impl` (grab_source + the
-   immediate-mode `Encoder = glow::Context` record) against it to validate the abstraction on the
+   immediate-mode `CommandSink = glow::Context` record) against it to validate the abstraction on the
    genuinely divergent backend — the seam's whole justification. The associated types are driven by the
    **known backend set** (wgpu + glow). *Decision gate:* if the glow sketch shows the trait does not
    fit without contortion, ship v1 as a **concrete `backdrop-blur-wgpu`/-`egui` pair (no trait)** and

@@ -60,7 +60,7 @@ pub fn strongest_repaint(surfaces: &[Surface]) -> RepaintPolicy {
 pub(crate) struct SeamContext<'a, B: BackdropBlur> {
     pub device: &'a B::Device,
     pub queue: &'a B::Queue,
-    pub encoder: &'a mut B::Encoder,
+    pub sink: &'a mut B::CommandSink,
     pub source: &'a B::SourceTexture,
     pub target: &'a B::Target,
     pub target_spec: B::TargetSpec,
@@ -88,7 +88,7 @@ where
         if let Some(prepared) =
             blur.prepare(ctx.device, ctx.queue, ctx.source, ctx.target_spec, &request)?
         {
-            blur.record(ctx.encoder, ctx.target, prepared)?;
+            blur.record(ctx.sink, ctx.target, prepared)?;
             recorded += 1;
         }
     }
@@ -246,7 +246,7 @@ impl OwnLoopRenderer {
             SeamContext {
                 device,
                 queue,
-                encoder: &mut encoder,
+                sink: &mut encoder,
                 source: &source,
                 target: frame.target,
                 target_spec: self.target_format,
@@ -352,7 +352,7 @@ mod tests {
     impl BackdropBlur for RecordingBlur {
         type Device = ();
         type Queue = ();
-        type Encoder = ();
+        type CommandSink = ();
         type SourceTexture = ();
         type Target = ();
         type TargetSpec = ();
@@ -374,7 +374,7 @@ mod tests {
             }
         }
 
-        fn record(&self, _encoder: &mut (), _target: &(), _prepared: ()) -> Result<(), BlurError> {
+        fn record(&self, _sink: &mut (), _target: &(), _prepared: ()) -> Result<(), BlurError> {
             self.events.borrow_mut().push("record");
             Ok(())
         }
@@ -413,7 +413,7 @@ mod tests {
             SeamContext {
                 device: &(),
                 queue: &(),
-                encoder: &mut (),
+                sink: &mut (),
                 source: &(),
                 target: &(),
                 target_spec: (),

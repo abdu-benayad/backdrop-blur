@@ -93,7 +93,7 @@ impl std::ops::Deref for HeadlessGl {
 }
 
 impl std::ops::DerefMut for HeadlessGl {
-    /// `BackdropBlur::record` takes `&mut Encoder` (`&mut glow::Context`); glow's methods are all
+    /// `BackdropBlur::record` takes `&mut CommandSink` (`&mut glow::Context`); glow's methods are all
     /// `&self`, so this mutable deref is sound — it only satisfies the seam signature, it does not
     /// imply exclusive GL access beyond the single-threaded harness contract.
     fn deref_mut(&mut self) -> &mut glow::Context {

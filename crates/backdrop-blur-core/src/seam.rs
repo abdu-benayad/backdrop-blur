@@ -1,10 +1,11 @@
 //! The seam — the traits each GPU backend implements.
 //!
 //! [`BackdropBlur`] is the universal seam: **two-phase** (`prepare` then `record`) because the
-//! backends demand it. wgpu uploads uniforms/textures through its **Queue** (not the encoder),
-//! so the upload phase needs the queue and the record phase needs only the encoder; glow is
-//! immediate-mode (`prepare` uploads via the context, `record` draws). Every backend implements
-//! this trait, and it is **total** — it contains no method a given backend cannot perform.
+//! backends demand it. wgpu uploads uniforms/textures through its **Queue** (not its
+//! `CommandEncoder`), so the upload phase needs the queue and the record phase needs only the
+//! command sink; glow is immediate-mode (`prepare` uploads via the context, `record` draws).
+//! Every backend implements this trait, and it is **total** — it contains no method a given
+//! backend cannot perform.
 //!
 //! [`GrabPass`] is a **separate, additive** trait for the grab-pass family only. The own-loop
 //! path (wgpu) hands the host's already-sampleable intermediate straight to `prepare` and never
@@ -24,7 +25,7 @@
 //! real implementation**: [`backdrop-blur-glow`] implements both `BackdropBlur` and `GrabPass`
 //! with live, `unsafe` GL and a full Tier-1 readback suite, so the seam is proven by working code
 //! rather than an `unimplemented!()` sketch. Each associated type binds to a real glow type
-//! (`Device`/`Encoder` → `glow::Context`, `SourceTexture` → the grab source, `Target` →
+//! (`Device`/`CommandSink` → `glow::Context`, `SourceTexture` → the grab source, `Target` →
 //! `Option<glow::Framebuffer>` — the live draw FBO, `None` = the default framebuffer); the one `()`
 //! (`Queue`) is honest because glow uploads through its context rather than a queue, and
 //! `TargetSpec` is the **framebuffer size** (the composite viewport): the composite needs the full
@@ -59,8 +60,10 @@ pub trait BackdropBlur {
     type Device;
     /// The upload queue (`wgpu::Queue`; `()` for glow, which uploads via the context).
     type Queue;
-    /// The command sink (`wgpu::CommandEncoder`; `glow::Context`, the immediate-mode handle).
-    type Encoder;
+    /// The handle `record` issues GPU work into (`wgpu::CommandEncoder`, deferred;
+    /// `glow::Context`, immediate). "Sink" deliberately implies nothing about deferral: the wgpu
+    /// backend records, the GL backend executes on the spot.
+    type CommandSink;
     /// A sampleable backdrop (`wgpu::TextureView`; `glow::Texture`). Own-loop backends receive
     /// it from the host; grab-pass backends produce it via [`GrabPass::grab_source`].
     type SourceTexture;
@@ -99,7 +102,7 @@ pub trait BackdropBlur {
         request: &BlurRequest,
     ) -> Result<Option<Self::Prepared>, BlurError>;
 
-    /// **Phase 2** — holds only the encoder + target. Records downsample → upsample → composite
+    /// **Phase 2** — holds only the sink + target. Records downsample → upsample → composite
     /// for a `prepared` produced earlier in the same frame. Consumes the handle: recording the
     /// same surface again requires a fresh `prepare`.
     ///
@@ -110,7 +113,7 @@ pub trait BackdropBlur {
     /// found.
     fn record(
         &self,
-        encoder: &mut Self::Encoder,
+        sink: &mut Self::CommandSink,
         target: &Self::Target,
         prepared: Self::Prepared,
     ) -> Result<(), BlurError>;

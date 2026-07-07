@@ -80,7 +80,7 @@ enum GlBlurPass {
 impl BackdropBlur for GlowBlur {
     type Device = glow::Context;
     type Queue = ();
-    type Encoder = glow::Context;
+    type CommandSink = glow::Context;
     type SourceTexture = GrabSource;
     type Target = Option<glow::Framebuffer>;
     type TargetSpec = FramebufferSize;
@@ -185,14 +185,14 @@ impl BackdropBlur for GlowBlur {
 
     fn record(
         &self,
-        encoder: &mut Self::Encoder,
+        sink: &mut Self::CommandSink,
         target: &Self::Target,
         prepared: Self::Prepared,
     ) -> Result<(), BlurError> {
-        // The seam hands the encoder by `&mut` (wgpu's owned CommandEncoder shape); glow draws
-        // immediate-mode on a shared context, so the real work is in `record_shared` (which an
+        // The seam hands the sink by `&mut` (wgpu's owned CommandEncoder shape); glow draws
+        // through the context immediately, so the real work is in `record_shared` (which an
         // eframe adapter holding an `Arc<glow::Context>` can also reach — see [`Self::frost_region`]).
-        self.record_shared(encoder, target, &prepared)
+        self.record_shared(sink, target, &prepared)
     }
 }
 
@@ -259,7 +259,7 @@ impl GlowBlur {
     }
 
     /// The real `record` body, taking the context by shared `&` (glow's reality). The seam's
-    /// `&mut`-encoder [`record`](BackdropBlur::record) and [`frost_region`](Self::frost_region) both
+    /// `&mut`-sink [`record`](BackdropBlur::record) and [`frost_region`](Self::frost_region) both
     /// delegate here. Saves every GL binding it perturbs, runs the passes + composite, then restores
     /// (DESIGN §11).
     fn record_shared(

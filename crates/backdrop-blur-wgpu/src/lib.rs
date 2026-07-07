@@ -374,7 +374,7 @@ impl WgpuBlur {
 impl BackdropBlur for WgpuBlur {
     type Device = wgpu::Device;
     type Queue = wgpu::Queue;
-    type Encoder = wgpu::CommandEncoder;
+    type CommandSink = wgpu::CommandEncoder;
     type SourceTexture = SourceView;
     type Target = wgpu::TextureView;
     type TargetSpec = wgpu::TextureFormat;
@@ -603,7 +603,7 @@ impl BackdropBlur for WgpuBlur {
 
     fn record(
         &self,
-        encoder: &mut Self::Encoder,
+        sink: &mut Self::CommandSink,
         target: &Self::Target,
         prepared: Self::Prepared,
     ) -> Result<(), BlurError> {
@@ -624,7 +624,7 @@ impl BackdropBlur for WgpuBlur {
             })?;
 
         // Blur into the scratch (Gaussian ping-pong, or the dual-Kawase pyramid).
-        self.record_blur(encoder, &prepared.blur)?;
+        self.record_blur(sink, &prepared.blur)?;
 
         // Composite: the final blurred texture → target, over the WHOLE attachment (default
         // viewport). The
@@ -632,7 +632,7 @@ impl BackdropBlur for WgpuBlur {
         // off-target rect cannot trip scissor validation; coverage 0 outside the panel keeps
         // LoadOp::Load content untouched. (A scissor to the panel + AA margin is a future perf
         // optimization once the host threads the target size in.)
-        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+        let mut pass = sink.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("backdrop-blur composite-pass"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                 view: target,

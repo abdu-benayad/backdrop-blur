@@ -76,7 +76,7 @@ backdrop-blur-wgpu      backdrop-blur-glow      two sibling backends, one seam
 
 Unchanged from v1; this is the first real implementation of its glow side.
 
-- **`BackdropBlur`** (per-backend cached resources). glow, as built: `Device = Encoder = glow::Context` (immediate mode), `Queue = ()`, `SourceTexture = GrabSource` (the grabbed backdrop texture), `Target = Option<glow::Framebuffer>` (egui's live draw FBO; `None` = the default framebuffer), `TargetSpec = FramebufferSize` (the composite viewport), `Prepared = GlPrepared` (owned).
+- **`BackdropBlur`** (per-backend cached resources). glow, as built: `Device = CommandSink = glow::Context` (immediate mode), `Queue = ()`, `SourceTexture = GrabSource` (the grabbed backdrop texture), `Target = Option<glow::Framebuffer>` (egui's live draw FBO; `None` = the default framebuffer), `TargetSpec = FramebufferSize` (the composite viewport), `Prepared = GlPrepared` (owned).
   - `prepare(ctx, (), &source, target_spec, &request) -> Result<Option<GlPrepared>, BlurError>` — resolve the payload, pick/allocate scratch, lazily build+cache programs. `Ok(None)` when the clamped region is empty.
   - `record(ctx, &target_fbo, prepared) -> Result<(), BlurError>` — consumes the handle (as-built, post-0.1.0: double-record is a compile error); runs the blur passes + composite, **and leaves GL state as found** (§11). Two clauses are load-bearing, not mere restore-list entries: **scissor is disabled for the whole record**, and the composite draws under a **full-framebuffer viewport** (§10).
 - **`GrabPass: BackdropBlur`** (glow-only).

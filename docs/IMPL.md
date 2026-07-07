@@ -74,7 +74,7 @@ no extra method and no `()` in a load-bearing slot:
 | `BackdropBlur` item | wgpu | glow (from the spike) |
 |---|---|---|
 | `Device` / `Queue` | `wgpu::Device` / `wgpu::Queue` | `glow::Context` / `()` (uploads via the context) |
-| `Encoder` | `wgpu::CommandEncoder` | `glow::Context` (immediate draw handle) |
+| `CommandSink` | `wgpu::CommandEncoder` | `glow::Context` (immediate draw handle) |
 | `Framebuffer` / `SourceTexture` | `()` / `wgpu::TextureView` | `glow::Framebuffer` / `glow::Texture` |
 | `Target` / `TargetSpec` | `wgpu::TextureView` / `wgpu::TextureFormat` | `glow::Framebuffer` / **`FramebufferSize`** (the composite viewport, **not** a color format — as built) |
 | `Prepared` (OWNED) | resolved offsets/tint/mask/rect + resource keys | **same payload** — glow's `prepare` *resolves* params into `Prepared`; it does **not** "upload" (immediate-mode GL binds uniforms at draw, in `record`) — K2 |
