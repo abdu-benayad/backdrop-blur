@@ -82,11 +82,19 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@1.95.0
+        with:
+          components: clippy
       - uses: Swatinem/rust-cache@v2
       - name: install lavapipe (software Vulkan rasterizer)
         run: |
           sudo apt-get update
           sudo apt-get install -y mesa-vulkan-drivers
+      - name: clippy (gated image-snapshots configs)
+        # default-tier's workspace clippy never enables these features, so lint rot behind the
+        # gate is invisible there. Clippy type-checks without executing — no GPU needed.
+        run: |
+          cargo clippy -p backdrop-blur-wgpu --all-targets --features image-snapshots -- -D warnings
+          cargo clippy -p backdrop-blur-egui --all-targets --features image-snapshots -- -D warnings
       - name: gated GPU readback + snapshot tests
         env:
           VK_ICD_FILENAMES: /usr/share/vulkan/icd.d/lvp_icd.json
@@ -106,11 +114,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@1.95.0
+        with:
+          components: clippy
       - uses: Swatinem/rust-cache@v2
       - name: install Mesa software GL + EGL
         run: |
           sudo apt-get update
           sudo apt-get install -y libegl1-mesa-dev libgl1-mesa-dri libgles2-mesa-dev
+      - name: clippy (gated gl-snapshots config)
+        # Same coverage gap as the gpu job: gl-snapshots test code is unlinted elsewhere.
+        run: cargo clippy -p backdrop-blur-glow --all-targets --features gl-snapshots -- -D warnings
       - name: gated GL readback tests (grab / blur / composite)
         env:
           EGL_PLATFORM: surfaceless
