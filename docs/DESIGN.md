@@ -215,14 +215,16 @@ pub trait BackdropBlur {
     ) -> Result<Option<Self::Prepared>, BlurError>;
 
     /// Phase 2 — has only the encoder + target. Records down → up → composite for a prior
-    /// `prepare` in the same frame. `source != target` is a contract (S2); wgpu forbids
-    /// sampling the texture it writes. The immediate-mode backend restores GL state it touched
-    /// (bound FBO, viewport, blend func, texture units) so it leaves state as found (§10).
+    /// `prepare` in the same frame, **consuming the handle** (as-built: recording the same
+    /// surface twice is a use-after-move compile error, not a prose rule). `source != target`
+    /// is a contract (S2); wgpu forbids sampling the texture it writes. The immediate-mode
+    /// backend restores GL state it touched (bound FBO, viewport, blend func, texture units)
+    /// so it leaves state as found (§10).
     fn record(
         &self,
         encoder: &mut Self::Encoder,
         target: &Self::Target,
-        prepared: &Self::Prepared,
+        prepared: Self::Prepared,
     ) -> Result<(), BlurError>;
 }
 
@@ -253,10 +255,12 @@ pub trait GrabPass: BackdropBlur {
 ```
 
 - **v1 contract is serial `prepare` → `record` per surface** (single-surface scope, §2). The handle is
-  **owned**, so the contract does not rely on "record immediately follows prepare"; but because the
-  ping-pong scratch is shared, **two surfaces are not prepared-then-both-recorded** in v1 — each is
-  prepared and recorded before the next. Genuine multi-surface batching (overlapping glass) is deferred
-  (§9) and would need a per-call scratch discriminator, not just the owned handle (K1).
+  **owned and consumed by `record`** (as-built), so double-record is unrepresentable — no prose rule
+  needed. What remains prose: because the ping-pong scratch is shared, **two surfaces are not
+  prepared-then-both-recorded** in v1 — each is prepared and recorded before the next; the backends
+  guard the stale-handle case with a generation `debug_assert`. Genuine multi-surface batching
+  (overlapping glass) is deferred (§9) and would need a per-call scratch discriminator, not just the
+  owned handle (K1).
 - **Cache key is a newtype, not size alone (S5):** `PingPongKey { size, levels }` keys the fixed-format
   (`Rgba16Float`) scratch chain (`levels` = dual-Kawase mip depth, a function of `BlurStrength × Scale`).
   The **composite pipeline is keyed separately by `TargetFormat`** (M8) — the down/up scratch is always
