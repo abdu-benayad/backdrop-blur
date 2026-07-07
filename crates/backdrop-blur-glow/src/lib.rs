@@ -39,11 +39,13 @@ mod profile;
 mod program;
 mod scratch;
 
-// The EGL-surfaceless headless-GL harness for the Tier-1 unit tests — crate-internal so those tests
-// can reach the `pub(crate)` blur internals. Native-only (no EGL on wasm) and `gl-snapshots`-gated,
-// so plain `cargo test --workspace` never builds it.
-#[cfg(all(test, feature = "gl-snapshots", not(target_arch = "wasm32")))]
-mod gl_harness;
+// The EGL-surfaceless headless-GL harness — shared test scaffolding for this crate's `gl_tests`
+// AND the egui adapter's gated tests. Doc-hidden `pub` because it is test scaffolding, not library
+// API. Native-only (no EGL on wasm) and `gl-snapshots`-gated, so it is compiled only under the
+// gated feature and never in a default build.
+#[cfg(all(feature = "gl-snapshots", not(target_arch = "wasm32")))]
+#[doc(hidden)]
+pub mod gl_harness;
 
 use backdrop_blur_core::{BlurError, BlurStage};
 use glow::HasContext;

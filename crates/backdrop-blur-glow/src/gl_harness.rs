@@ -26,15 +26,18 @@
 //! On this host the context comes back **desktop GL 3.3** (`#version 140` path). The ES/WebGL2
 //! dialect is exercised by the Step-4 web tier, not here.
 //!
-//! A crate-internal module (gated `test + gl-snapshots + not(wasm)` at the `mod` decl) rather than a
-//! `tests/` helper, so the Tier-1 **unit** tests can reach the `pub(crate)` blur internals (`grab`,
-//! scratch eviction, composite) — an integration test in `tests/` could only see the public API.
+//! A crate module (gated `gl-snapshots + not(wasm)`, doc-hidden `pub` at the `mod` decl) rather
+//! than a `tests/` helper, so the Tier-1 **unit** tests can reach the `pub(crate)` blur internals
+//! (`grab`, scratch eviction, composite) — an integration test in `tests/` could only see the
+//! public API — and so the egui adapter's gated tests can reuse the EGL bring-up instead of
+//! duplicating it.
 #![allow(
     dead_code,
     reason = "test harness; a given build step's tests use a subset of the helper API"
 )]
 
 use std::ffi::{CStr, c_void};
+use std::sync::Arc;
 
 use glow::HasContext;
 use khronos_egl as egl;
@@ -61,11 +64,21 @@ type PfnEglGetPlatformDisplayExt = unsafe extern "system" fn(
 /// A live, current, surfaceless GL context plus the EGL handles that own it. [`Deref`] yields the
 /// `glow::Context`. **The crate under test owns its own GL objects and must `destroy` them before
 /// this drops**; `Drop` here only tears down the EGL context/display.
-pub(crate) struct HeadlessGl {
+pub struct HeadlessGl {
     egl: Egl,
     display: egl::Display,
     context: egl::Context,
-    gl: glow::Context,
+    gl: Arc<glow::Context>,
+}
+
+impl HeadlessGl {
+    /// Hand the context to APIs that take `&Arc<glow::Context>` (e.g. `GrabPassRenderer::new`).
+    ///
+    /// Clones must **not** outlive this [`HeadlessGl`] — its `Drop` tears down the EGL context,
+    /// after which GL calls through a surviving clone are undefined behavior.
+    pub fn context_arc(&self) -> Arc<glow::Context> {
+        Arc::clone(&self.gl)
+    }
 }
 
 impl std::ops::Deref for HeadlessGl {
@@ -81,7 +94,11 @@ impl std::ops::DerefMut for HeadlessGl {
     /// `&self`, so this mutable deref is sound — it only satisfies the seam signature, it does not
     /// imply exclusive GL access beyond the single-threaded harness contract.
     fn deref_mut(&mut self) -> &mut glow::Context {
-        &mut self.gl
+        // Rule: no outstanding `context_arc` clones may exist while mutably dereferencing the
+        // harness. This crate's internal tests never call `context_arc`, so this cannot fire here;
+        // a violation elsewhere is a loud, self-diagnosing test bug.
+        Arc::get_mut(&mut self.gl)
+            .expect("no outstanding context_arc clones while mutating the harness context")
     }
 }
 
@@ -103,7 +120,7 @@ impl Drop for HeadlessGl {
 /// Create a surfaceless headless GL context. **Panics** with a diagnostic if EGL/GL cannot be set
 /// up: these tests are compile-gated behind `gl-snapshots`, so the runner is expected to have a
 /// usable GL stack (IMPL §14 — compile-gated, not runtime-skipped).
-pub(crate) fn headless_gl() -> HeadlessGl {
+pub fn headless_gl() -> HeadlessGl {
     // SAFETY: loading the system EGL library by its standard SONAME; we trust libEGL.so.1 to be a
     // real EGL implementation.
     let lib = unsafe { libloading::Library::new("libEGL.so.1") }.expect("load libEGL.so.1");
@@ -139,7 +156,7 @@ pub(crate) fn headless_gl() -> HeadlessGl {
         egl: egl_instance,
         display,
         context,
-        gl,
+        gl: Arc::new(gl),
     }
 }
 
@@ -252,7 +269,7 @@ fn create_surfaceless_context(
 }
 
 /// Read a single RGBA8 pixel at `(x, y)` from the current draw framebuffer. Calls `glFinish` first.
-pub(crate) fn read_rgba8(gl: &glow::Context, x: i32, y: i32) -> [u8; 4] {
+pub fn read_rgba8(gl: &glow::Context, x: i32, y: i32) -> [u8; 4] {
     let mut px = [0_u8; 4];
     // SAFETY: a GL context is current; `read_pixels` writes exactly 4 bytes (1 RGBA8 pixel) into
     // `px`, whose length matches the 1x1 RGBA/UNSIGNED_BYTE request.
@@ -274,12 +291,7 @@ pub(crate) fn read_rgba8(gl: &glow::Context, x: i32, y: i32) -> [u8; 4] {
 /// Read a single RGBA8 pixel at `(x, y)` from a `texture` (bottom-left origin), by attaching it to a
 /// throwaway read framebuffer. Restores no state — call only on the harness context where the test
 /// owns all bindings.
-pub(crate) fn read_texture_rgba8(
-    gl: &glow::Context,
-    texture: glow::Texture,
-    x: i32,
-    y: i32,
-) -> [u8; 4] {
+pub fn read_texture_rgba8(gl: &glow::Context, texture: glow::Texture, x: i32, y: i32) -> [u8; 4] {
     let mut px = [0_u8; 4];
     // SAFETY: a GL context is current; a throwaway FBO is created, `texture` attached as color 0,
     // one pixel read, then both the FBO binding cleared and the FBO deleted. `texture` is a live

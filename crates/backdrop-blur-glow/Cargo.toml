@@ -21,11 +21,14 @@ log = { workspace = true }
 [features]
 # ALL GPU tests live behind this. Plain `cargo test --workspace` therefore runs only this crate's
 # Tier-0 (pure, no-GL) tests, keeping the default tier GPU-free (IMPL §1.2). The native
-# EGL-surfaceless harness and every readback test are compiled only with this feature.
-gl-snapshots = []
+# EGL-surfaceless harness and every readback test are compiled only with this feature, and the
+# harness module itself ships under it (doc-hidden `pub mod gl_harness`) so the egui adapter's
+# gated tests can reuse the EGL bring-up instead of duplicating it.
+gl-snapshots = ["dep:khronos-egl", "dep:libloading"]
 
-# The EGL-surfaceless headless-GL harness + the native readback tests are dev-only and cannot
-# build on wasm (no EGL there). Split by target so the wasm tier (step 4b) never sees them.
-[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
-khronos-egl = { version = "6", features = ["dynamic"] }
-libloading = "0.8"
+# The EGL-surfaceless headless-GL harness cannot build on wasm (no EGL there). Split by target so
+# the wasm tier (step 4b) never sees it; optional, pulled in only by `gl-snapshots`, so a default
+# build stays byte-identical. (A wasm build with the feature on is inert, not an error.)
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+khronos-egl = { version = "6", features = ["dynamic"], optional = true }
+libloading = { version = "0.8", optional = true }
