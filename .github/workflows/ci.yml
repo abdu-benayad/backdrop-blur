@@ -121,9 +121,11 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y libegl1-mesa-dev libgl1-mesa-dri libgles2-mesa-dev
-      - name: clippy (gated gl-snapshots config)
+      - name: clippy (gated gl-snapshots configs)
         # Same coverage gap as the gpu job: gl-snapshots test code is unlinted elsewhere.
-        run: cargo clippy -p backdrop-blur-glow --all-targets --features gl-snapshots -- -D warnings
+        run: |
+          cargo clippy -p backdrop-blur-glow --all-targets --features gl-snapshots -- -D warnings
+          cargo clippy -p backdrop-blur-egui --all-targets --features gl-snapshots -- -D warnings
       - name: gated GL readback tests (grab / blur / composite)
         env:
           EGL_PLATFORM: surfaceless
@@ -131,6 +133,13 @@ jobs:
         # --test-threads=1: each test makes its own EGL context; parallel contexts exhaust the
         # surfaceless display.
         run: cargo test -p backdrop-blur-glow --features gl-snapshots -- --test-threads=1
+      - name: gated GL control-flow tests (egui GrabPassRenderer)
+        env:
+          EGL_PLATFORM: surfaceless
+          LIBGL_ALWAYS_SOFTWARE: "1"
+        # --test-threads=1: each test makes its own EGL context; parallel contexts exhaust the
+        # surfaceless display.
+        run: cargo test -p backdrop-blur-egui --features gl-snapshots -- --test-threads=1
 
   wasm:
     # The glow backend must stay buildable for WebGL2 (wasm32), the design's web-first target.

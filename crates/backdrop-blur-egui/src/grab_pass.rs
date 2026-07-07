@@ -444,3 +444,72 @@ mod tests {
         );
     }
 }
+
+/// Tier-1 control-flow tests for the renderer against a **real** surfaceless GL context (the glow
+/// crate's shared `gl_harness`): construction, idempotent teardown, poisoned-lock recovery, and the
+/// take-outcome read-and-clear semantics. The paint CALLBACK itself needs a live egui+glow paint
+/// pass and stays untested here (see GLOW_IMPL's "integration test not built" note). One fresh
+/// harness context per test; CI runs with `--test-threads=1`.
+#[cfg(all(test, feature = "gl-snapshots", not(target_arch = "wasm32")))]
+mod gl_tests {
+    use std::panic::{AssertUnwindSafe, catch_unwind};
+    use std::sync::atomic::Ordering;
+
+    use backdrop_blur_glow::gl_harness::headless_gl;
+
+    use super::*;
+
+    #[test]
+    fn new_succeeds_on_the_headless_context() {
+        let harness = headless_gl();
+        let gl = harness.context_arc();
+        let renderer = GrabPassRenderer::new(&gl).expect("new");
+        // Teardown before the harness Drop: the renderer owns GL objects that must be freed while
+        // the EGL context is still alive.
+        renderer.destroy(&gl);
+    }
+
+    #[test]
+    fn destroy_is_idempotent() {
+        let harness = headless_gl();
+        let gl = harness.context_arc();
+        let renderer = GrabPassRenderer::new(&gl).expect("new");
+        renderer.destroy(&gl);
+        // The second destroy must be a no-op via GlowBlur's destroyed flag — not panicking IS the
+        // assertion.
+        renderer.destroy(&gl);
+    }
+
+    #[test]
+    fn destroy_recovers_a_poisoned_lock() {
+        let harness = headless_gl();
+        let gl = harness.context_arc();
+        let renderer = GrabPassRenderer::new(&gl).expect("new");
+
+        // Poison the blur mutex the way a mid-frost panic would: unwind while holding the guard.
+        let _ = catch_unwind(AssertUnwindSafe(|| {
+            let _g = renderer.blur.lock().expect("pre-poison lock");
+            panic!("poison the mutex");
+        }));
+        assert!(renderer.blur.is_poisoned());
+
+        // The recovery path: destroy must clear the poison and still free the GL objects.
+        renderer.destroy(&gl);
+        assert!(!renderer.blur.is_poisoned());
+    }
+
+    #[test]
+    fn take_frost_outcome_reads_and_clears_on_a_live_renderer() {
+        let harness = headless_gl();
+        let gl = harness.context_arc();
+        let renderer = GrabPassRenderer::new(&gl).expect("new");
+
+        renderer
+            .outcome
+            .store(FrostOutcome::Composited as u8, Ordering::Relaxed);
+        assert_eq!(renderer.take_frost_outcome(), FrostOutcome::Composited);
+        assert_eq!(renderer.take_frost_outcome(), FrostOutcome::DidNotFire);
+
+        renderer.destroy(&gl);
+    }
+}

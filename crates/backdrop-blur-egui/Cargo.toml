@@ -53,3 +53,6 @@ grab-pass = ["dep:backdrop-blur-glow", "dep:egui_glow", "dep:glow", "dep:log"]
 # Gates the GPU tier: a headless lavapipe test that drives real egui-wgpu rendering + blur and
 # reads the frosted result back. Hard-imports the wgpu backend, so it requires `own-loop`.
 image-snapshots = ["own-loop"]
+# Gates the adapter's real-GL control-flow tests (GrabPassRenderer new/destroy/poison/outcome):
+# shares backdrop-blur-glow's EGL-surfaceless harness. Test infrastructure, not library API.
+gl-snapshots = ["grab-pass", "backdrop-blur-glow/gl-snapshots"]
