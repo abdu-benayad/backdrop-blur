@@ -25,13 +25,18 @@ struct FrostApp {
 
 impl FrostApp {
     fn new(cc: &eframe::CreationContext<'_>) -> Self {
-        let renderer = cc.gl.as_ref().and_then(|gl| match GrabPassRenderer::new(gl) {
-            Ok(renderer) => Some(renderer),
-            Err(err) => {
-                eprintln!("backdrop-blur grab-pass unavailable, using the plain-fill fallback: {err}");
-                None
-            }
-        });
+        let renderer = cc
+            .gl
+            .as_ref()
+            .and_then(|gl| match GrabPassRenderer::new(gl) {
+                Ok(renderer) => Some(renderer),
+                Err(err) => {
+                    eprintln!(
+                        "backdrop-blur grab-pass unavailable, using the plain-fill fallback: {err}"
+                    );
+                    None
+                }
+            });
         Self {
             renderer,
             blur_radius: 24.0,
