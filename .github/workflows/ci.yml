@@ -1,11 +1,17 @@
 name: CI
 
-# Verification has two tiers (IMPL §8):
-#   - default tier  — runs on ANY runner, spins up zero GPU contexts (the repo invariant
-#                     that the default `cargo test` builds and runs GPU or not).
-#   - gated GPU tier — lavapipe software Vulkan; added in step 2 with `backdrop-blur-wgpu`.
-# The winit example builds in its own job (added in step 3c); it never enters the portable
-# `--workspace --all-targets` loop, which is why that loop stays winit-free and portable.
+# Verification tiers, as they exist today:
+#   - default tier   — runs on ANY runner, spins up zero GPU contexts (the repo invariant
+#                      that the default `cargo test` builds and runs GPU or not), plus the
+#                      wgpu-free grab-pass (kiosk) config and the MSRV build.
+#   - gated GPU tier — lavapipe software Vulkan (`image-snapshots`): the wgpu backend's
+#                      readback/snapshot tests and the egui own-loop render test.
+#   - gated GL tier  — EGL-surfaceless software GL (`gl-snapshots`): the glow backend's
+#                      Tier-1 readback tests AND the egui adapter's GL control-flow tests.
+#   - wasm build     — the glow backend compiled for wasm32 (WebGL2 readiness, build only).
+#   - excluded examples — built (not run) in their own job; they never enter the portable
+#                      `--workspace --all-targets` loop, which is why that loop stays
+#                      winit-free and portable.
 
 on:
   push:
@@ -75,6 +81,14 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: build on the declared MSRV
         run: cargo build --workspace
+      - name: check the gated configs on the declared MSRV
+        # The gated (gl-snapshots / image-snapshots) code is compiled only in the GPU/GL jobs,
+        # which run the dev toolchain — gated code could otherwise adopt a >MSRV API unseen.
+        # `cargo check` type-checks the gated code without needing a GPU.
+        run: |
+          cargo check -p backdrop-blur-glow --all-targets --features gl-snapshots
+          cargo check -p backdrop-blur-egui --all-targets --features gl-snapshots
+          cargo check -p backdrop-blur-wgpu --all-targets --features image-snapshots
 
   gpu:
     name: gated GPU tier (lavapipe)
@@ -105,11 +119,13 @@ jobs:
           cargo test -p backdrop-blur-egui --features image-snapshots -- --test-threads=1
 
   gl-native:
-    # The glow backend's Tier-1 readback tests on a real GL context (grab / blur / composite). The
-    # EGL-surfaceless harness tries the NVIDIA device-platform path, then the default display; on a
-    # headless Mesa runner `EGL_PLATFORM=surfaceless` + software GL resolves to llvmpipe. All glow
-    # GPU tests are `gl-snapshots`-gated, so they run only here, never in the default tier.
-    name: gated GL tier (glow, EGL-surfaceless)
+    # The glow backend's Tier-1 readback tests (grab / blur / composite) AND the egui adapter's
+    # GrabPassRenderer control-flow tests, both on a real GL context. The EGL-surfaceless harness
+    # (shared: glow's doc-hidden `gl_harness` module) tries the NVIDIA device-platform path, then
+    # the default display; on a headless Mesa runner `EGL_PLATFORM=surfaceless` + software GL
+    # resolves to llvmpipe. All GL GPU tests are `gl-snapshots`-gated, so they run only here,
+    # never in the default tier.
+    name: gated GL tier (glow + egui adapter, EGL-surfaceless)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -123,9 +139,11 @@ jobs:
           sudo apt-get install -y libegl1-mesa-dev libgl1-mesa-dri libgles2-mesa-dev
       - name: clippy (gated gl-snapshots configs)
         # Same coverage gap as the gpu job: gl-snapshots test code is unlinted elsewhere.
+        # --no-default-features on the egui config: the own-loop default would otherwise pull
+        # the whole wgpu stack onto the GL runner for tests that never touch it.
         run: |
           cargo clippy -p backdrop-blur-glow --all-targets --features gl-snapshots -- -D warnings
-          cargo clippy -p backdrop-blur-egui --all-targets --features gl-snapshots -- -D warnings
+          cargo clippy -p backdrop-blur-egui --no-default-features --features gl-snapshots --all-targets -- -D warnings
       - name: gated GL readback tests (grab / blur / composite)
         env:
           EGL_PLATFORM: surfaceless
@@ -138,8 +156,8 @@ jobs:
           EGL_PLATFORM: surfaceless
           LIBGL_ALWAYS_SOFTWARE: "1"
         # --test-threads=1: each test makes its own EGL context; parallel contexts exhaust the
-        # surfaceless display.
-        run: cargo test -p backdrop-blur-egui --features gl-snapshots -- --test-threads=1
+        # surfaceless display. --no-default-features: see the clippy step above.
+        run: cargo test -p backdrop-blur-egui --no-default-features --features gl-snapshots -- --test-threads=1
 
   wasm:
     # The glow backend must stay buildable for WebGL2 (wasm32), the design's web-first target.

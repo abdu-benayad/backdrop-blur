@@ -230,7 +230,8 @@ impl GlowBlur {
     /// both the grab read source (what the host just rendered) and the composite destination.
     /// `framebuffer_size` is the **true** screen size in physical px (the composite viewport); the
     /// adapter holds it. Returns [`FrostEffect::ClippedEmpty`] doing nothing when the region clips
-    /// to nothing (the seam's `prepare → Ok(None)` no-op, surfaced instead of swallowed).
+    /// to nothing — or the request's `target_rect` is zero-area (`Region::is_empty`), refused here
+    /// before the grab runs (the seam's `prepare → Ok(None)` no-op, surfaced instead of swallowed).
     pub fn frost_region(
         &mut self,
         gl: &glow::Context,

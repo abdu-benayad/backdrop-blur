@@ -212,8 +212,10 @@ mod tests {
     use super::*;
 
     // Host-side mirrors of the GLSL transfer functions, used to pin the gamma constants the shaders
-    // carry. A wrong WGSL->GLSL port (e.g. `select`/`mix` inverted, a mistyped cutoff) shifts gamma
-    // silently in a way no coarse readback would catch — this is the Tier-0 guard (IMPL §2b).
+    // carry against a wrong WGSL->GLSL port (e.g. `select`/`mix` inverted, a mistyped cutoff). The
+    // encode call site is additionally pinned by the two-operating-point readback oracle
+    // (`composite_encodes_linear_through_the_glsl_at_two_operating_points` in blur_tests.rs); the
+    // decode-site exponent remains guarded only here (IMPL §2b).
     fn host_srgb_to_linear(c: f32) -> f32 {
         if c <= 0.040_45 {
             c / 12.92

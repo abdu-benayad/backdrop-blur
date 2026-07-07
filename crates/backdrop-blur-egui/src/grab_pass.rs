@@ -39,7 +39,7 @@ use crate::Surface;
 pub enum FrostOutcome {
     /// No frost paint callback ran. Either nothing was enqueued, or egui skipped the
     /// callback (fully clipped/offscreen rect) — or, under `panic = "unwind"` only, the
-    /// process never got to record anything (see [`FrostGuard`]'s abort caveat).
+    /// process never got to record anything (see the private `FrostGuard`'s abort caveat).
     DidNotFire = 0,
     /// A callback fired but there was nothing to draw: the region clipped to nothing at
     /// the adapter (`callback_region` → `None`) or at the backend
@@ -224,7 +224,8 @@ impl GrabPassRenderer {
     ///
     /// What each variant means for the host: `DidNotFire` — egui never invoked the callback
     /// (nothing enqueued, or the rect was fully clipped; the wiring/version-skew check);
-    /// `ClippedEmpty` — a callback fired but the region clipped to nothing (valid no-op);
+    /// `ClippedEmpty` — a callback fired but the region clipped to nothing, or the request's
+    /// `target_rect` was zero-area (`Region::is_empty`; a valid no-op either way);
     /// `Failed` — a frost errored or panicked (details in the throttled `log::warn!`);
     /// `Composited` — at least one frosted surface actually painted. A `Composited` report
     /// masks a same-frame `Failed` by design — see [`FrostOutcome`].
