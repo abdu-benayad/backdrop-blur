@@ -203,8 +203,9 @@ pub trait BackdropBlur {
     /// since wgpu bakes the fragment-target format into the pipeline at creation — M3/M8), resolves the
     /// payload (offsets, tint, mask, rect) into `Prepared`. Returns an OWNED handle (no borrow of self)
     /// so `record` need not immediately follow.
-    /// **No-op:** a zero-sized/offscreen `request.source_region` returns `Ok(None)` — valid input, not
-    /// an error (reconciles §4.5); `record` is then simply not called. (Hence `Option`.)
+    /// **No-op:** a zero-sized/offscreen `request.source_region` — or a zero-area `request.target_rect`
+    /// (the composite divides by the target size) — returns `Ok(None)`: valid input, not an error
+    /// (reconciles §4.5); `record` is then simply not called. (Hence `Option`.)
     fn prepare(
         &mut self,
         device: &Self::Device,
@@ -276,8 +277,8 @@ pub trait GrabPass: BackdropBlur {
 error type** (`wgpu::*`/`glow::*` live in the GPU crates core forbids). It therefore carries a **boxed
 trait-object source** — still a typed `Error` value that composes with `?`/`#[source]`, *not* a
 flattened `String` model. Each `Display` is a complete sentence with recovery context. **A
-zero-sized/offscreen region is a no-op (`prepare` returns `Ok(None)`), not an error** (valid input) — so
-there is *no* `ZeroSizedRegion` variant.
+zero-sized/offscreen source region — or a zero-area target rect — is a no-op (`prepare` returns
+`Ok(None)`), not an error** (valid input) — so there is *no* `ZeroSizedRegion` variant.
 
 ```rust
 type BackendError = Box<dyn std::error::Error + Send + Sync + 'static>;
@@ -423,8 +424,9 @@ that *does* expose a sampleable-backdrop hook drops in as an additive adapter cr
 
 ## 9. Error and degradation scenarios
 
-- **Zero-sized / offscreen region** → `prepare` returns `Ok(())`-equivalent no-op (no allocation, no
-  grab); **never an error** (M7).
+- **Zero-sized / offscreen source region, or zero-area target rect** → `prepare` returns
+  `Ok(())`-equivalent no-op (no allocation, no grab; the composite divides by the target size, so an
+  empty target never reaches it); **never an error** (M7).
 - **Resource creation fails** → `Err(BlurError::ResourceCreation { stage, .. })`; the adapter logs and
   the surface renders without frost that frame. Never panics.
 - **Unsupported target format** → `Err(UnsupportedTarget)` from the lazy per-format pipeline build (M3).

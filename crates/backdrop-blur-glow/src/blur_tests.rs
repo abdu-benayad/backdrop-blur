@@ -972,6 +972,45 @@ fn frost_region_reports_clipped_empty_when_the_request_clips_to_nothing() {
     free_fbo(&gl, scene.fbo, scene.tex);
 }
 
+/// The target-side half of the no-op: a zero-area `target_rect` over a NORMAL in-bounds source
+/// region (mismatched regions — the path no adapter exercises) is `prepare → Ok(None)`, surfaced
+/// by the fused entry as [`FrostEffect::ClippedEmpty`]. The composite divides by the target size
+/// (composite.frag:45), so without the guard a zero dimension yields NaN/Inf UVs along a visible
+/// line instead of nothing.
+#[test]
+fn frost_region_reports_clipped_empty_for_a_zero_area_target_rect() {
+    let gl = headless_gl();
+    let mut blur = GlowBlur::new(&gl).expect("new");
+    let scene = flat_backdrop(&gl, [0.5, 0.5, 0.5, 1.0]);
+    // Both the grab and the source region are normal and in-bounds; only the target is empty.
+    let p = panel([32, 32], [64, 64]);
+    let grab = GlRegion::from_bottom_px(p.origin, p.size, Scale::new(1.0));
+    let request = BlurRequest {
+        source_region: p,
+        target_rect: panel([32, 32], [0, 64]), // zero width → empty target
+        blur_radius: BlurRadius::new(8.0),
+        tint: no_tint(),
+        corner_radius: CornerRadius::new(0.0),
+        presence: Presence::default(),
+    };
+    let effect = blur
+        .frost_region(
+            &gl,
+            Some(scene.fbo),
+            grab,
+            FramebufferSize([DIM, DIM]),
+            &request,
+        )
+        .expect("frost_region ok");
+    assert_eq!(
+        effect,
+        FrostEffect::ClippedEmpty,
+        "a zero-area target_rect must report ClippedEmpty, not reach the composite"
+    );
+    blur.destroy(&gl);
+    free_fbo(&gl, scene.fbo, scene.tex);
+}
+
 /// The fused entry reports [`FrostEffect::Composited`] for a normal in-bounds panel — the
 /// positive half of the `FrostEffect` contract (pixel-level proofs live in the readback tests).
 #[test]

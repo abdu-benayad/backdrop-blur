@@ -391,10 +391,17 @@ impl BackdropBlur for WgpuBlur {
         let Some(clipped) = request.source_region.clip_to(source.size) else {
             return Ok(None); // zero-area or fully-offscreen region → no-op
         };
+        // The target-side half of the same no-op: the composite shader divides by the target size
+        // (composite.wgsl:57 — `rect_uv = (px - rect_origin_px) / rect_size_px`), so a zero dimension
+        // would yield NaN/Inf UVs blended at ~50% alpha along a visible line. An empty target is the
+        // same valid no-op as an empty source, not an error (DESIGN §9).
+        if request.target_rect.is_empty() {
+            return Ok(None);
+        }
 
         // Advance the eviction clock and drop scratch chains untouched for RETENTION_FRAMES, before
         // ensuring this frame's chain — so a resized/moved surface's old-size chains are freed rather
-        // than accumulating. Placed *after* the clip guard, mirroring the glow backend (blur.rs:99):
+        // than accumulating. Placed *after* the no-op guards, mirroring the glow backend (blur.rs:99):
         // the counter counts frosted frames, so a surface that clips to nothing does not age out a
         // chain it is about to reuse when it returns on-screen.
         self.begin_frame();

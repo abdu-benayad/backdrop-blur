@@ -99,6 +99,14 @@ impl BackdropBlur for GlowBlur {
         let Some(clipped) = request.source_region.clip_to(target_spec.0) else {
             return Ok(None);
         };
+        // The target-side half of the same no-op: the composite divides by the target size
+        // (composite.frag:45 — `rect_uv = (px - u_rect_origin_px) / u_rect_size_px`), so a zero
+        // dimension would yield NaN/Inf UVs blended at ~50% alpha along a visible line. An empty
+        // target is the same valid no-op as an empty source, not an error (DESIGN §9); through
+        // `frost_region` it reports `FrostEffect::ClippedEmpty` — consistent with its meaning.
+        if request.target_rect.is_empty() {
+            return Ok(None);
+        }
 
         let gl = device;
         // Advance the scratch frame + evict stale chains before (re)allocating this frame's chain.

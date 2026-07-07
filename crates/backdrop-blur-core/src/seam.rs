@@ -82,11 +82,14 @@ pub trait BackdropBlur {
     /// [`Prepared`](Self::Prepared).
     ///
     /// Returns `Ok(None)` when `request.source_region` clips to nothing against `source` — a
-    /// zero-area or fully-offscreen region (see [`Region::clip_to`]). That is a **no-op**, valid
-    /// input rather than an error; `record` is then simply not called. Returns `Err` only on a
-    /// real GPU fault.
+    /// zero-area or fully-offscreen region (see [`Region::clip_to`]) — or when
+    /// `request.target_rect` is zero-area (see [`Region::is_empty`]; the composite divides by the
+    /// target size, so an empty target must never reach it). Either is a **no-op**, valid input
+    /// rather than an error; `record` is then simply not called. Returns `Err` only on a real
+    /// GPU fault.
     ///
     /// [`Region::clip_to`]: crate::Region::clip_to
+    /// [`Region::is_empty`]: crate::Region::is_empty
     fn prepare(
         &mut self,
         device: &Self::Device,

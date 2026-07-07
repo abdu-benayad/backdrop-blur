@@ -682,3 +682,42 @@ fn scratch_cache_evicts_old_sizes_instead_of_leaking() {
         "scratch cache grew to {cached} chains across {frames} resizes — eviction is not bounding it"
     );
 }
+
+/// The target-side half of the no-op contract: a zero-area `target_rect` over a NORMAL in-bounds
+/// source region (mismatched regions — the path no adapter exercises) must be `Ok(None)`. The
+/// composite shader divides by the target size (composite.wgsl:57), so without the guard a zero
+/// dimension yields NaN/Inf UVs blended along a visible line instead of nothing.
+#[test]
+fn prepare_is_a_no_op_for_a_zero_area_target_rect() {
+    let (device, queue) = software_device();
+    let backdrop = flat_backdrop(&device, &queue, 128);
+    let source = SourceView {
+        view: backdrop.create_view(&wgpu::TextureViewDescriptor::default()),
+        size: [DIM, DIM],
+        color_space: SourceColorSpace::GammaSrgb,
+    };
+    let mut blur = WgpuBlur::new(&device);
+
+    let request = BlurRequest {
+        source_region: region([50, 50], [100, 100]), // normal, fully in-bounds source
+        target_rect: region([50, 50], [0, 100]),     // zero width → empty target
+        blur_radius: BlurRadius::new(8.0),
+        tint: Tint::new(LinearRgba::new(0.0, 0.0, 0.0, 0.15)),
+        corner_radius: CornerRadius::new(8.0),
+        presence: Presence::default(),
+    };
+
+    let prepared = blur
+        .prepare(
+            &device,
+            &queue,
+            &source,
+            wgpu::TextureFormat::Rgba8Unorm,
+            &request,
+        )
+        .expect("a zero-area target is a no-op, not an error");
+    assert!(
+        prepared.is_none(),
+        "a zero-area target_rect must be a no-op (Ok(None))"
+    );
+}
