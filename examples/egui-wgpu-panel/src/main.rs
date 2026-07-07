@@ -173,6 +173,8 @@ impl ApplicationHandler for App {
             WindowEvent::RedrawRequested => {
                 self.render();
             }
+            // The resume signal after occlusion: the acquire path stays quiet while occluded.
+            WindowEvent::Occluded(false) => gpu.window.request_redraw(),
             _ => {}
         }
     }
@@ -186,8 +188,13 @@ impl App {
             | wgpu::CurrentSurfaceTexture::Suboptimal(frame) => frame,
             wgpu::CurrentSurfaceTexture::Outdated | wgpu::CurrentSurfaceTexture::Lost => {
                 gpu.surface.configure(&gpu.device, &gpu.config);
+                // Retry with the fresh swapchain — without this, one failed acquire kills the
+                // Wait-mode redraw chain.
+                gpu.window.request_redraw();
                 return;
             }
+            // Occluded resumes via the `WindowEvent::Occluded(false)` handler; re-arming here
+            // would busy-loop while hidden.
             wgpu::CurrentSurfaceTexture::Timeout
             | wgpu::CurrentSurfaceTexture::Occluded
             | wgpu::CurrentSurfaceTexture::Validation => return,
@@ -258,7 +265,12 @@ impl App {
                 // Live backdrop → keep animating.
                 gpu.window.request_redraw();
             }
-            Err(err) => eprintln!("blur error: {err}"),
+            Err(err) => {
+                eprintln!("blur error: {err}");
+                // A transient blur error must not freeze a Live animation (a persistent one
+                // retries visibly with its eprintln — accepted for a demo over a silent freeze).
+                gpu.window.request_redraw();
+            }
         }
     }
 }
