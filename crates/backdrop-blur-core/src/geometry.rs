@@ -49,15 +49,6 @@ pub struct Region {
 }
 
 impl Region {
-    /// Clip this region to a source texture of size `source_extent`, returning the in-bounds
-    /// intersection (its scale preserved).
-    ///
-    /// Returns `None` when the intersection is empty — i.e. the region is zero-area or lies
-    /// fully outside the texture. That `None` is the blur **no-op**: `prepare` returns
-    /// `Ok(None)` and `record` is never called (DESIGN §4.4/§4.5). A *partially* offscreen
-    /// region is clipped to the in-bounds sub-rect rather than dropped, so the backend never
-    /// samples outside the source (the "Region clipping" core operation, DESIGN §11). All
-    /// arithmetic saturates, so an `origin + size` past `u32::MAX` cannot overflow.
     /// Whether this region has zero area — i.e. its width or height is `0`.
     ///
     /// An empty region cannot be composited into. This is the *target-side* half of the blur
@@ -68,6 +59,15 @@ impl Region {
         self.size[0] == 0 || self.size[1] == 0
     }
 
+    /// Clip this region to a source texture of size `source_extent`, returning the in-bounds
+    /// intersection (its scale preserved).
+    ///
+    /// Returns `None` when the intersection is empty — i.e. the region is zero-area or lies
+    /// fully outside the texture. That `None` is the blur **no-op**: `prepare` returns
+    /// `Ok(None)` and `record` is never called (DESIGN §4.4/§4.5). A *partially* offscreen
+    /// region is clipped to the in-bounds sub-rect rather than dropped, so the backend never
+    /// samples outside the source (the "Region clipping" core operation, DESIGN §11). All
+    /// arithmetic saturates, so an `origin + size` past `u32::MAX` cannot overflow.
     pub fn clip_to(&self, source_extent: [u32; 2]) -> Option<Region> {
         let [ox, oy] = self.origin;
         let [w, h] = self.size;
