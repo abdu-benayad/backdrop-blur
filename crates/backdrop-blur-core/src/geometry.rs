@@ -58,6 +58,16 @@ impl Region {
     /// region is clipped to the in-bounds sub-rect rather than dropped, so the backend never
     /// samples outside the source (the "Region clipping" core operation, DESIGN §11). All
     /// arithmetic saturates, so an `origin + size` past `u32::MAX` cannot overflow.
+    /// Whether this region has zero area — i.e. its width or height is `0`.
+    ///
+    /// An empty region cannot be composited into. This is the *target-side* half of the blur
+    /// **no-op** contract (`prepare` returns `Ok(None)`, DESIGN §9), mirroring how
+    /// [`Self::clip_to`] returning `None` is the source-side half. The composite shaders divide
+    /// by the target rect's size, so an empty target must never reach them.
+    pub fn is_empty(&self) -> bool {
+        self.size[0] == 0 || self.size[1] == 0
+    }
+
     pub fn clip_to(&self, source_extent: [u32; 2]) -> Option<Region> {
         let [ox, oy] = self.origin;
         let [w, h] = self.size;
@@ -220,6 +230,24 @@ mod tests {
         // origin + size would overflow u32; saturating arithmetic clips to the extent.
         let r = region([u32::MAX - 1, 0], [10, 10], 1.0);
         assert_eq!(r.clip_to([100, 100]), None);
+    }
+
+    #[test]
+    fn is_empty_true_for_zero_width() {
+        assert!(region([5, 5], [0, 10], 1.0).is_empty());
+        // Both dimensions zero is still empty.
+        assert!(region([5, 5], [0, 0], 1.0).is_empty());
+    }
+
+    #[test]
+    fn is_empty_true_for_zero_height() {
+        assert!(region([5, 5], [10, 0], 1.0).is_empty());
+    }
+
+    #[test]
+    fn is_empty_false_for_positive_area() {
+        assert!(!region([5, 5], [1, 1], 1.0).is_empty());
+        assert!(!region([0, 0], [100, 60], 2.0).is_empty());
     }
 
     #[test]
