@@ -410,11 +410,51 @@ fn frosted_panel_blurs_the_backdrop_inside_the_masked_rect() {
     //    the seam samples uniform red. The blur leaves it red (linear 1,0,0); the 15%-black tint
     //    film yields linear 0.85; the Rgba8Unorm target needs the manual linear→sRGB encode, so
     //    the readback is ~237 (0.930·255), NOT ~217 (0.85·255 — what a SKIPPED encode would give).
-    //    This is the assertion that can actually fail on a gamma-encode bug.
+    //    This is the assertion that can actually fail on a gamma-encode bug. It pins the encode's
+    //    mix-branch/clamp, NOT the exponent — the curve is flat at 0.85 (a 2.2-for-2.4
+    //    substitution measures 236 vs 237 here); the exponent is pinned at the dark point by
+    //    `composite_encodes_the_dark_point_to_pin_the_exponent` below.
     let [r, g, b, _] = pixel(&out, 70, 100);
     assert!(
         (230..=244).contains(&r) && g <= 6 && b <= 6,
         "interior red must round-trip through the linear→sRGB encode to ~237, got r={r} g={g} b={b}"
+    );
+}
+
+/// Dark-point oracle for the composite's linear→sRGB encode **exponent** — the assertion the
+/// near-white check in `frosted_panel_blurs_the_backdrop_inside_the_masked_rect` cannot provide.
+/// The same red backdrop (byte 255 → linear 1.0 under any power law, so the decode contributes
+/// nothing) through an 80%-black tint film yields linear 0.2 red, where the encode curve is ~5×
+/// steeper than at 0.85: a 2.2-for-2.4 exponent substitution lands ≈115 vs the canonical ≈124
+/// (Δ≈9), outside the ±5 band — at 0.85 the same substitution is Δ≈1 and invisible. The
+/// near-white assertion pins the encode's mix-branch/clamp instead; together the two operating
+/// points cover the encode (mirrors the glow oracle in `blur_tests.rs`
+/// `composite_encodes_linear_through_the_glsl_at_two_operating_points`).
+#[test]
+fn composite_encodes_the_dark_point_to_pin_the_exponent() {
+    let (device, queue) = software_device();
+    let backdrop = backdrop_texture(&device, &queue);
+    let out = frost_and_read(
+        &device,
+        &queue,
+        &backdrop,
+        10.0,
+        Tint::new(LinearRgba::new(0.0, 0.0, 0.0, 0.8)),
+        1.0,
+    );
+
+    // Same interior pixel as the near-white assertion: fully covered, 30px from the red/blue seam
+    // and well inside the panel edges, so the blur leaves it uniform red and only the tint film
+    // and the encode set the byte. Measured 124 on lavapipe (exactly the canonical encode of 0.2);
+    // ±5 keeps the 2.2-substitution's ≈115 outside the band.
+    let [r, g, b, _] = pixel(&out, 70, 100);
+    assert!(
+        (119..=129).contains(&r),
+        "encode of linear 0.2 must read ≈124 (the exponent oracle: 2.2 lands ≈115), got r={r}"
+    );
+    assert!(
+        g <= 6 && b <= 6,
+        "the black film cannot introduce green/blue, got g={g} b={b}"
     );
 }
 
