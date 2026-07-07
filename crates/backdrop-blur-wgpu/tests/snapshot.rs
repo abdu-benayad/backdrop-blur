@@ -226,7 +226,7 @@ fn frost_and_read(
             depth_or_array_layers: 1,
         },
     );
-    blur.record(&mut encoder, &target_view, &prepared)
+    blur.record(&mut encoder, &target_view, prepared)
         .expect("record");
     queue.submit([encoder.finish()]);
     read_back(device, queue, &target)
@@ -376,7 +376,7 @@ fn frosted_panel_blurs_the_backdrop_inside_the_masked_rect() {
             depth_or_array_layers: 1,
         },
     );
-    blur.record(&mut encoder, &target_view, &prepared)
+    blur.record(&mut encoder, &target_view, prepared)
         .expect("record");
     queue.submit([encoder.finish()]);
 

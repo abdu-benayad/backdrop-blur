@@ -179,12 +179,12 @@ impl BackdropBlur for GlowBlur {
         &self,
         encoder: &mut Self::Encoder,
         target: &Self::Target,
-        prepared: &Self::Prepared,
+        prepared: Self::Prepared,
     ) -> Result<(), BlurError> {
         // The seam hands the encoder by `&mut` (wgpu's owned CommandEncoder shape); glow draws
         // immediate-mode on a shared context, so the real work is in `record_shared` (which an
         // eframe adapter holding an `Arc<glow::Context>` can also reach — see [`Self::frost_region`]).
-        self.record_shared(encoder, target, prepared)
+        self.record_shared(encoder, target, &prepared)
     }
 }
 
@@ -249,7 +249,8 @@ impl GlowBlur {
     ) -> Result<(), BlurError> {
         debug_assert_eq!(
             prepared.generation, self.generation,
-            "GlPrepared invalidated by a later prepare (K1 single-surface serial contract)"
+            "GlPrepared is stale: a later prepare clobbered the shared scratch before this handle \
+             was recorded (K1 single-surface serial contract)"
         );
         // Save every binding the blur perturbs, run the passes + composite, then restore.
         let saved = SavedGlState::capture(gl);

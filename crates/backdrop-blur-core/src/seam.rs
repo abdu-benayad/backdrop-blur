@@ -45,11 +45,12 @@ use crate::{BlurError, BlurRequest, GlRegion};
 /// - **Serial `prepare` → `record` per surface.** v1 scope is a single frosted surface over a
 ///   once-rendered backdrop; because the ping-pong scratch is shared, two surfaces are not
 ///   prepared-then-both-recorded — each is prepared and recorded before the next. The
-///   [`Prepared`](Self::Prepared) handle is **owned** (it borrows nothing from the blurrer), so
-///   the contract does not rely on "record immediately follows prepare"; genuine multi-surface
-///   batching is deferred future work. Because `Prepared` is owned, the types permit (but the
-///   contract forbids) preparing two surfaces against the shared scratch before recording
-///   either — the backend should debug-assert against an outstanding handle (K1).
+///   [`Prepared`](Self::Prepared) handle is **owned** (it borrows nothing from the blurrer) and
+///   **consumed by `record`**, so recording the same handle twice is a compile error, not a
+///   contract violation. The one hazard the types still permit — preparing a *second* surface
+///   against the shared scratch before recording the first (its scratch is then clobbered) —
+///   remains a documented contract, guarded by the backends' generation `debug_assert` (K1);
+///   genuine multi-surface batching is deferred future work.
 /// - **Single-threaded, frame-serial.** `prepare` takes `&mut self`, `record` takes `&self`.
 ///   The blurrer is **not** required to be `Send`/`Sync` in v1; a multi-threaded render loop
 ///   owns one per render thread.
@@ -71,7 +72,8 @@ pub trait BackdropBlur {
     type TargetFormat;
     /// An **owned**, opaque per-call handle carrying the resolved payload (kernel offsets,
     /// tint, [`ResolvedMask`](crate::ResolvedMask), target rect, and the resource keys) from
-    /// `prepare` to `record`. Owned — it borrows nothing from the blurrer.
+    /// `prepare` to `record`. Owned — it borrows nothing from the blurrer — and consumed by
+    /// `record`, so a handle cannot be replayed.
     type Prepared;
 
     /// **Phase 1** — holds the device + queue. Allocates and keys the ping-pong chain, lazily
@@ -95,7 +97,8 @@ pub trait BackdropBlur {
     ) -> Result<Option<Self::Prepared>, BlurError>;
 
     /// **Phase 2** — holds only the encoder + target. Records downsample → upsample → composite
-    /// for a `prepared` produced earlier in the same frame.
+    /// for a `prepared` produced earlier in the same frame. Consumes the handle: recording the
+    /// same surface again requires a fresh `prepare`.
     ///
     /// `target` **must differ from** the `source` the matching `prepare` sampled: wgpu forbids
     /// sampling the texture a pass writes, so read-after-write within one surface is a contract
@@ -106,7 +109,7 @@ pub trait BackdropBlur {
         &self,
         encoder: &mut Self::Encoder,
         target: &Self::Target,
-        prepared: &Self::Prepared,
+        prepared: Self::Prepared,
     ) -> Result<(), BlurError>;
 }
 

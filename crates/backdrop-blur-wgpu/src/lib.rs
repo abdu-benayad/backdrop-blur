@@ -598,15 +598,15 @@ impl BackdropBlur for WgpuBlur {
         &self,
         encoder: &mut Self::Encoder,
         target: &Self::Target,
-        prepared: &Self::Prepared,
+        prepared: Self::Prepared,
     ) -> Result<(), BlurError> {
-        // v1 is serial prepare→record per surface: this must be the most recent prepare, or its
-        // shared scratch has already been clobbered by a newer one (K1). Debug-only — release
-        // builds trust the contract.
+        // `record` consumes the handle, so double-record is a compile error. The one hazard left
+        // to guard: a newer prepare clobbered the shared scratch before this handle was recorded
+        // (K1 serial contract). Debug-only — release builds trust the contract.
         debug_assert_eq!(
             prepared.generation, self.generation,
-            "record called with a stale Prepared (a newer prepare clobbered the shared scratch); \
-             v1 requires serial prepare→record per surface (K1)"
+            "Prepared is stale: a newer prepare clobbered the shared scratch before this handle \
+             was recorded; v1 requires serial prepare→record per surface (K1)"
         );
         let composite_pipeline = self
             .composite_pipelines

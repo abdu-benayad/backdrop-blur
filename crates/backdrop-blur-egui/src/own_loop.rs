@@ -92,7 +92,7 @@ where
             ctx.target_format,
             &request,
         )? {
-            blur.record(ctx.encoder, ctx.target, &prepared)?;
+            blur.record(ctx.encoder, ctx.target, prepared)?;
             recorded += 1;
         }
     }
@@ -378,7 +378,7 @@ mod tests {
             }
         }
 
-        fn record(&self, _encoder: &mut (), _target: &(), _prepared: &()) -> Result<(), BlurError> {
+        fn record(&self, _encoder: &mut (), _target: &(), _prepared: ()) -> Result<(), BlurError> {
             self.events.borrow_mut().push("record");
             Ok(())
         }

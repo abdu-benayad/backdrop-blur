@@ -196,7 +196,7 @@ fn frost(
         .prepare(&*gl, &(), &source, FramebufferSize([DIM, DIM]), &request)
         .expect("prepare")
         .expect("a non-empty region prepares a blur");
-    blur.record(gl, &Some(t_fbo), &prepared).expect("record");
+    blur.record(gl, &Some(t_fbo), prepared).expect("record");
     // SAFETY: flush so the readback sees the composite; current context.
     unsafe { gl.finish() };
     Target {
@@ -763,7 +763,7 @@ fn record_leaves_gl_state_unchanged() {
         gl.bind_vertex_array(Some(blur.vao));
     }
     let before = probe_state(&gl);
-    blur.record(&mut gl, &Some(t_fbo), &prepared)
+    blur.record(&mut gl, &Some(t_fbo), prepared)
         .expect("record");
     // SAFETY: flush the record's commands before re-probing.
     unsafe { gl.finish() };
@@ -908,11 +908,10 @@ fn opacity_fades_the_surface_linearly_toward_the_destination() {
     let f = read_texture_rgba8(&gl, t1.tex, cx, cy); // opacity 1 == fully-present F
 
     // opacity = 0 leaves the destination untouched (near-black seed).
-    for ch in 0..3 {
+    for (ch, &channel) in d.iter().take(3).enumerate() {
         assert!(
-            d[ch] <= 16,
-            "opacity=0 leaves the destination untouched (channel {ch} = {})",
-            d[ch]
+            channel <= 16,
+            "opacity=0 leaves the destination untouched (channel {ch} = {channel})"
         );
     }
     // opacity = 0.5 is the linear midpoint between D and F (byte space, where the blend happens).
