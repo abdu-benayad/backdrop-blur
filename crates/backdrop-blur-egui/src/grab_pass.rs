@@ -15,13 +15,109 @@
 //! the mapping is a field read + an `i32 → u32` cast — **no `height − y` flip**. It is a pure
 //! function, unit-tested below, so the orientation wiring is proven without a GPU.
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
 
-use backdrop_blur_core::{BlurError, BlurRequest, GlRegion, RepaintPolicy, Scale};
+use backdrop_blur_core::{BlurError, BlurRequest, FrostEffect, GlRegion, RepaintPolicy, Scale};
 use backdrop_blur_glow::{FramebufferSize, GlowBlur, current_draw_framebuffer};
 
 use crate::Surface;
+
+/// The strongest thing any frost callback achieved since the host last took the report
+/// (via [`GrabPassRenderer::take_frost_outcome`]). Adapter vocabulary, deliberately not in
+/// core: [`DidNotFire`](Self::DidNotFire) means "egui never invoked my paint callback",
+/// a concept the seam cannot see.
+///
+/// The discriminants order the variants weakest→strongest; the callback records via
+/// `fetch_max`, so a multi-surface frame reports the best result any surface reached.
+/// **The asymmetry is deliberate:** a composited surface masks a same-frame
+/// [`Failed`](Self::Failed) in this value — this answers *"did the glass appear?"* (the
+/// wiring/version-skew signal), it is **not** a failure detector. The once-per-episode
+/// `log::warn!` in the callback is the failure channel.
+#[repr(u8)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FrostOutcome {
+    /// No frost paint callback ran. Either nothing was enqueued, or egui skipped the
+    /// callback (fully clipped/offscreen rect) — or, under `panic = "unwind"` only, the
+    /// process never got to record anything (see [`FrostGuard`]'s abort caveat).
+    DidNotFire = 0,
+    /// A callback fired but there was nothing to draw: the region clipped to nothing at
+    /// the adapter (`callback_region` → `None`) or at the backend
+    /// ([`FrostEffect::ClippedEmpty`]). A valid no-op, not an error.
+    ClippedEmpty = 1,
+    /// A callback fired and the frost failed — [`BlurError`] from the backend, or a panic
+    /// mid-frost (recorded by the drop guard during unwind). Best-effort: the warning is
+    /// throttled to once per failure episode.
+    Failed = 2,
+    /// At least one frosted surface was blurred and composited into the framebuffer.
+    Composited = 3,
+}
+
+impl FrostOutcome {
+    /// Decode the raw atomic value. Total by construction — every store site casts one of
+    /// the four named discriminants, so `4..=255` is unreachable in practice; the crate
+    /// forbids `unsafe` (no transmute) and the contract forbids panicking on a value we
+    /// ourselves never wrote, so the catch-all folds to the reset value.
+    fn from_raw(raw: u8) -> Self {
+        match raw {
+            1 => Self::ClippedEmpty,
+            2 => Self::Failed,
+            3 => Self::Composited,
+            // 0 is the reset value; anything else is unreachable by construction (see above).
+            _ => Self::DidNotFire,
+        }
+    }
+}
+
+impl From<FrostEffect> for FrostOutcome {
+    fn from(effect: FrostEffect) -> Self {
+        match effect {
+            FrostEffect::Composited => Self::Composited,
+            FrostEffect::ClippedEmpty => Self::ClippedEmpty,
+        }
+    }
+}
+
+/// Panic honesty for the outcome report: armed at callback entry (the successor of the old
+/// set-`ran`-at-entry protocol), committed by exactly one exit path. If the callback unwinds
+/// before a commit — the mutex-poisoning scenario the recovery below anticipates — `Drop`
+/// records [`FrostOutcome::Failed`] during unwind, so a fired-then-panicked callback is never
+/// reported as [`FrostOutcome::DidNotFire`]. A pre-stored `Failed` floor would not work:
+/// `fetch_max` can only raise, so it would corrupt a legitimate `ClippedEmpty`.
+///
+/// Caveat: under `panic = "abort"` no destructor runs — the guard is unwind-only honesty.
+struct FrostGuard<'a> {
+    outcome: &'a AtomicU8,
+    committed: bool,
+}
+
+impl<'a> FrostGuard<'a> {
+    fn arm(outcome: &'a AtomicU8) -> Self {
+        Self {
+            outcome,
+            committed: false,
+        }
+    }
+
+    /// Record this exit path's outcome and disarm the panic fallback. `fetch_max` keeps the
+    /// strongest outcome across the frame's callbacks; `Relaxed` is sound because these are
+    /// RMWs on a single atomic and nothing else is published through it (frame data
+    /// synchronizes via the `Mutex` and the GL stream) — inferring *other* state from an
+    /// observed value would require upgrading to `Release`/`Acquire`.
+    fn commit(&mut self, outcome: FrostOutcome) {
+        self.outcome.fetch_max(outcome as u8, Ordering::Relaxed);
+        self.committed = true;
+    }
+}
+
+impl Drop for FrostGuard<'_> {
+    fn drop(&mut self) {
+        if !self.committed {
+            self.outcome
+                .fetch_max(FrostOutcome::Failed as u8, Ordering::Relaxed);
+        }
+    }
+}
 
 /// Drives the grab-pass (eframe-on-glow) frosted-glass path: holds the glow backend behind a mutex
 /// (the paint callback is `Fn + Send + Sync`, so it cannot own `&mut`) and enqueues a paint callback
@@ -34,12 +130,12 @@ use crate::Surface;
 /// the backend's GL objects are freed while the context lives — never in `Drop` (DESIGN §11).
 pub struct GrabPassRenderer {
     blur: Arc<Mutex<GlowBlur>>,
-    /// Set true at paint-callback entry whenever a frost callback actually fires (egui skips a
-    /// fully-clipped callback); the host can poll [`took_effect`](Self::took_effect) after the frame
-    /// to learn whether the callback fired (the result cannot be returned synchronously from a
-    /// callback — DESIGN §7). It signals *the callback ran*, not *the blur composited*: a
-    /// clipped-empty or failed frost still sets it.
-    ran: Arc<AtomicBool>,
+    /// The strongest [`FrostOutcome`] any frost callback recorded since the host last took it
+    /// (`fetch_max`-encoded `u8`; the result cannot be returned synchronously from a paint
+    /// callback — GLOW_DESIGN §7). Each callback's exit path commits its outcome; a
+    /// [`FrostGuard`] records `Failed` if a callback unwinds first. The host polls
+    /// [`take_frost_outcome`](Self::take_frost_outcome) once per frame, after paint.
+    outcome: Arc<AtomicU8>,
     /// Throttles the best-effort frost-failure warning to once per failure episode: set the first
     /// time a [`frost`](Self::frost) callback errors, cleared on the next success. Under
     /// [`RepaintPolicy::Live`] the callback runs every frame, so without this latch a
@@ -57,7 +153,7 @@ impl GrabPassRenderer {
         let blur = GlowBlur::new(gl)?;
         Ok(Self {
             blur: Arc::new(Mutex::new(blur)),
-            ran: Arc::new(AtomicBool::new(false)),
+            outcome: Arc::new(AtomicU8::new(FrostOutcome::DidNotFire as u8)),
             warned: Arc::new(AtomicBool::new(false)),
         })
     }
@@ -77,11 +173,22 @@ impl GrabPassRenderer {
         guard.destroy(gl);
     }
 
-    /// Whether a frost paint callback has fired since the last call (reads **and resets** the flag).
-    /// egui skips a callback whose rect is fully clipped/offscreen, so a frosted surface is not
-    /// guaranteed to paint; this lets the host observe it after the frame.
-    pub fn took_effect(&self) -> bool {
-        self.ran.swap(false, Ordering::Relaxed)
+    /// The strongest [`FrostOutcome`] any frost callback recorded **since the last call** —
+    /// "take" because it reads **and resets** (to [`FrostOutcome::DidNotFire`]). Call it once
+    /// per frame, after paint: skipping a frame lets a stale `Composited` mask a later
+    /// `Failed`, since the report only ratchets upward between takes.
+    ///
+    /// What each variant means for the host: `DidNotFire` — egui never invoked the callback
+    /// (nothing enqueued, or the rect was fully clipped; the wiring/version-skew check);
+    /// `ClippedEmpty` — a callback fired but the region clipped to nothing (valid no-op);
+    /// `Failed` — a frost errored or panicked (details in the throttled `log::warn!`);
+    /// `Composited` — at least one frosted surface actually painted. A `Composited` report
+    /// masks a same-frame `Failed` by design — see [`FrostOutcome`].
+    pub fn take_frost_outcome(&self) -> FrostOutcome {
+        FrostOutcome::from_raw(
+            self.outcome
+                .swap(FrostOutcome::DidNotFire as u8, Ordering::Relaxed),
+        )
     }
 
     /// Enqueue a frosted [`Surface`] for this frame: drive its repaint policy and add a paint
@@ -99,8 +206,9 @@ impl GrabPassRenderer {
     ///   paint callbacks and silently no-ops on the blur; [`Opacity`] is the supported fade dial.
     /// - **For a dynamically-sized surface, pass *last frame's* rect** (stashed in egui temp memory):
     ///   the rect is unknown until content lays out, but the frost must be enqueued before it paints.
-    /// - After the frame, [`took_effect`](Self::took_effect) reports whether the callback *fired*
-    ///   (not whether pixels composited).
+    /// - After the frame, [`take_frost_outcome`](Self::take_frost_outcome) reports the strongest
+    ///   [`FrostOutcome`] any frost reached since the last take (read-and-clear; call once per
+    ///   frame, after paint).
     ///
     /// [`Opacity`]: backdrop_blur_core::Opacity
     pub fn frost(&self, ui: &egui::Ui, surface: Surface) {
@@ -112,16 +220,23 @@ impl GrabPassRenderer {
         }
 
         let blur = Arc::clone(&self.blur);
-        let ran = Arc::clone(&self.ran);
+        let outcome = Arc::clone(&self.outcome);
         let warned = Arc::clone(&self.warned);
         let callback = egui_glow::CallbackFn::new(move |info, painter| {
-            // Flag at callback ENTRY (DESIGN §7): record that the callback fired this frame, before
-            // any early-out, so `took_effect` is honest even when the region clips to nothing.
-            ran.store(true, Ordering::Relaxed);
+            // Armed at callback ENTRY (GLOW_DESIGN §7), the successor of the old set-`ran`-at-entry
+            // flag: every exit path below commits its outcome, and a panic before a commit is
+            // recorded as `Failed` by the guard's Drop — so a fired callback can never read back
+            // as `DidNotFire`, even when it clips to nothing or dies mid-frost.
+            let mut outcome_guard = FrostGuard::arm(&outcome);
             let gl = painter.gl();
 
             let Some((region, framebuffer_size)) = callback_region(&info) else {
-                return; // the panel clipped to nothing — a no-op
+                // The panel clipped to nothing — a valid no-op. Deliberately does NOT touch
+                // `warned`: this path never reached the frost, so it is no evidence a failure
+                // episode ended; re-arming here would reintroduce the per-frame log flood the
+                // latch exists to prevent.
+                outcome_guard.commit(FrostOutcome::ClippedEmpty);
+                return;
             };
             // A poisoned lock means a prior frost panicked mid-blur. GlowBlur is a bag of GL handles
             // with no invariant a panic can corrupt, so clear the poison and recover the guard rather
@@ -152,12 +267,18 @@ impl GrabPassRenderer {
             let target = current_draw_framebuffer(gl);
             match guard.frost_region(gl, target, region, framebuffer_size, &request) {
                 // Recovered (or never failed) — re-arm the once-per-episode failure warning below.
-                // Any `FrostEffect` re-arms (composited or clipped-empty); task 02 widens this.
-                Ok(_) => warned.store(false, Ordering::Relaxed),
+                // Any `FrostEffect` re-arms (composited or clipped-empty), matching the pre-widening
+                // any-Ok behavior; the outcome still distinguishes the two for the host.
+                Ok(effect) => {
+                    warned.store(false, Ordering::Relaxed);
+                    outcome_guard.commit(FrostOutcome::from(effect));
+                }
                 // A paint callback cannot propagate an error; the frost is best-effort. Warn ONCE per
-                // failure episode (DESIGN §7): under RepaintPolicy::Live this runs every frame, so an
-                // unthrottled warn floods a kiosk log. The format! runs only on the first bad frame.
+                // failure episode (GLOW_DESIGN §7): under RepaintPolicy::Live this runs every frame,
+                // so an unthrottled warn floods a kiosk log. The format! runs only on the first bad
+                // frame.
                 Err(e) => {
+                    outcome_guard.commit(FrostOutcome::Failed);
                     if !warned.swap(true, Ordering::Relaxed) {
                         log::warn!("backdrop-blur grab-pass frost failed: {e}");
                     }
@@ -252,5 +373,70 @@ mod tests {
         let viewport = rect((0.0, 0.0), (100.0, 100.0));
         let clip = rect((400.0, 400.0), (50.0, 50.0));
         assert!(callback_region(&info(viewport, clip, [800, 600], 1.0)).is_none());
+    }
+
+    #[test]
+    fn from_raw_round_trips_every_discriminant() {
+        for outcome in [
+            FrostOutcome::DidNotFire,
+            FrostOutcome::ClippedEmpty,
+            FrostOutcome::Failed,
+            FrostOutcome::Composited,
+        ] {
+            assert_eq!(FrostOutcome::from_raw(outcome as u8), outcome);
+        }
+    }
+
+    #[test]
+    fn from_raw_folds_an_out_of_range_value_to_did_not_fire() {
+        // Unreachable by construction (every store casts a named discriminant), but the decode
+        // is total: an unknown raw value folds to the reset value rather than panicking.
+        assert_eq!(FrostOutcome::from_raw(4), FrostOutcome::DidNotFire);
+        assert_eq!(FrostOutcome::from_raw(u8::MAX), FrostOutcome::DidNotFire);
+    }
+
+    #[test]
+    fn from_frost_effect_preserves_the_variant() {
+        assert_eq!(
+            FrostOutcome::from(FrostEffect::Composited),
+            FrostOutcome::Composited
+        );
+        assert_eq!(
+            FrostOutcome::from(FrostEffect::ClippedEmpty),
+            FrostOutcome::ClippedEmpty
+        );
+    }
+
+    #[test]
+    fn frost_guard_records_failed_when_dropped_uncommitted() {
+        // The panic path: the guard unwinds without a commit → Failed, but never lowers an
+        // already-committed stronger outcome (fetch_max only raises).
+        let outcome = AtomicU8::new(FrostOutcome::DidNotFire as u8);
+        drop(FrostGuard::arm(&outcome));
+        assert_eq!(
+            FrostOutcome::from_raw(outcome.load(Ordering::Relaxed)),
+            FrostOutcome::Failed
+        );
+
+        let outcome = AtomicU8::new(FrostOutcome::DidNotFire as u8);
+        let mut armed = FrostGuard::arm(&outcome);
+        armed.commit(FrostOutcome::Composited);
+        drop(armed);
+        assert_eq!(
+            FrostOutcome::from_raw(outcome.load(Ordering::Relaxed)),
+            FrostOutcome::Composited
+        );
+    }
+
+    #[test]
+    fn commit_ratchets_to_the_strongest_outcome() {
+        // Multi-surface frame: a clipped surface cannot mask a composited one.
+        let outcome = AtomicU8::new(FrostOutcome::DidNotFire as u8);
+        FrostGuard::arm(&outcome).commit(FrostOutcome::Composited);
+        FrostGuard::arm(&outcome).commit(FrostOutcome::ClippedEmpty);
+        assert_eq!(
+            FrostOutcome::from_raw(outcome.load(Ordering::Relaxed)),
+            FrostOutcome::Composited
+        );
     }
 }

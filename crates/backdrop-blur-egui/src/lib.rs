@@ -61,11 +61,13 @@
 //!    and write back the rect for next frame. It is stable while the surface is open; the only
 //!    artifact is one frame of staleness on a resize. (A first-class reserved-slot API that returns
 //!    the callback `Shape` for `painter.set()` is planned; until then this is the recommendation.)
-//! 4. **`GrabPassRenderer::took_effect` reports *ran*, not *composited*.** egui skips a
-//!    fully-clipped callback, so a frosted surface is not guaranteed to paint; `took_effect` lets the
-//!    host observe that the callback **fired**. It is set even when the region clipped to nothing or
-//!    the frost errored — it answers "did egui invoke my callback this frame", not "did pixels
-//!    change". Useful to confirm wiring; not a success signal.
+//! 4. **Poll `GrabPassRenderer::take_frost_outcome` once per frame, after paint.** egui skips a
+//!    fully-clipped callback, so a frosted surface is not guaranteed to paint; the typed
+//!    `FrostOutcome` report distinguishes never-fired (`DidNotFire`, the wiring/version-skew
+//!    check) from clipped-to-nothing, failed, and actually-composited. It is read-and-clear and
+//!    ratchets to the *strongest* outcome between takes — so take it every frame, and read
+//!    `Failed` from the throttled `log::warn!`, not from this value, when a same-frame composite
+//!    could mask it (the doc on `FrostOutcome` spells out the masking asymmetry).
 #![forbid(unsafe_code)]
 
 mod surface;
@@ -95,7 +97,7 @@ pub use own_loop::{FrameInput, OwnLoopRenderer, is_supported_target, strongest_r
 
 // Grab-pass path: the eframe-on-glow adapter. Gated so an own-loop-only build pulls no glow/egui_glow.
 #[cfg(feature = "grab-pass")]
-pub use grab_pass::GrabPassRenderer;
+pub use grab_pass::{FrostOutcome, GrabPassRenderer};
 
 // Re-export the exact `glow` this crate's public API ([`GrabPassRenderer::new`]/`destroy`) is typed
 // against, so a consumer writes `backdrop_blur_egui::glow::Context` and is structurally pinned to the
