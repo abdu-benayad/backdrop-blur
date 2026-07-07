@@ -191,7 +191,10 @@ pub trait BackdropBlur {
     type Encoder;       // wgpu::CommandEncoder | glow::Context (the immediate-mode draw handle)
     type SourceTexture; // wgpu::TextureView    | glow::Texture     (sampleable backdrop)
     type Target;        // wgpu::TextureView    | glow framebuffer  (composite destination)
-    type TargetFormat;  // wgpu::TextureFormat  | GLES internal-format enum
+    type TargetFormat;  // wgpu::TextureFormat  | FramebufferSize (glow, as-built: the composite
+                        //   viewport SIZE, not a color format — glow never introspects the target's
+                        //   internal format; see the seam.rs "Gate verdict". The slot's real role is
+                        //   "what prepare needs to know about the target", which is backend-specific.
     type Prepared;      // opaque, OWNED per-call handle (no borrow of self) carrying the resolved
                         // payload (offsets, tint, mask, rect, the resource keys) from prepare -> record
 
@@ -233,13 +236,18 @@ pub trait GrabPass: BackdropBlur {
     type Framebuffer;   // glow framebuffer (the grab READ source); wgpu never implements GrabPass
 
     /// Blit + MSAA-resolve the `region` out of the live `framebuffer` into a sampleable
-    /// SourceTexture; the GL read-origin flip lives inside (K5), so no extra method is forced.
+    /// SourceTexture. **As-built divergence (supersedes this doc's original K5):** `region` is a
+    /// `GlRegion` — already in GL bottom-left coordinates, constructed via `from_bottom_px` — so
+    /// `grab_source` performs NO read-origin flip. The v1 sketch placed the flip inside this
+    /// method; the adapter now builds the whole request bottom-left, so a flip here would be a
+    /// *double* flip. The y-orientation is carried by the type, not by an arithmetic step
+    /// (see `core/src/seam.rs` + `gl_region.rs` — the shipped source is ground truth here).
     fn grab_source(
         &mut self,
         device: &Self::Device,
         queue: &Self::Queue,
         framebuffer: &Self::Framebuffer,
-        region: Region,
+        region: GlRegion,
     ) -> Result<Self::SourceTexture, BlurError>;
 }
 ```
@@ -277,13 +285,17 @@ pub enum BlurError {
     #[error("target format {format} is not a supported render target for the blur composite")]
     UnsupportedTarget { format: String }, // deliberate String exception: core cannot name wgpu::TextureFormat,
                                           // so the backend captures format!("{fmt:?}") at the boundary.
-    #[error("the grab source could not be produced from the framebuffer for region {region:?}")]
-    GrabFailed { region: Region, #[source] source: BackendError },
+    #[error("the grab source could not be produced from the framebuffer for region {region}")]
+    GrabFailed { region: GlRegion, #[source] source: BackendError },   // GlRegion (bottom-left), as-built
+    #[error("the GL context does not support the blur backend: {detail}")]
+    UnsupportedContext { detail: String },  // as-built addition (glow construction-time gate);
+                                            // same documented String exception as UnsupportedTarget
     // … (one variant per real GPU-fault scenario in §9; no no-op-as-error variants)
 }
 
 #[derive(Debug, Clone, Copy)]
-pub enum BlurStage { PingPongTexture, DownsamplePipeline, UpsamplePipeline, CompositePipeline, UniformBuffer, BindGroup }
+pub enum BlurStage { PingPongTexture, DownsamplePipeline, UpsamplePipeline, CompositePipeline, UniformBuffer, BindGroup,
+                     ShaderCompile, ProgramLink, Framebuffer, VertexArray /* GL stages, as-built */ }
 ```
 
 `ResourceCreation.stage` localises a 3 AM kiosk failure to the exact resource that died.
@@ -303,6 +315,16 @@ pub enum RepaintPolicy { Static, Live, Bounded(Duration) }
 for glass over animating content; `Bounded` for periodic. The adapter — not core — drives the host's
 `request_repaint`; §6 shows the decision point and the "repaint-continuously-then-settle-static"
 sequence the research prescribes.
+
+> **As-built honesty (two caveats):** (1) the policy gates the outgoing *repaint request* only — the
+> blur work itself (grab/blur/composite) runs on **every** `render_frame`/paint call regardless of
+> policy, so `Bounded` saves power only when the host is otherwise idle, and a host that repaints for
+> unrelated reasons pays full blur cost per frame. (2) On the **own-loop** path the adapter calls
+> `ctx.request_repaint()` *outside* an egui pass; for a manual winit host that signal is only
+> observable via egui's repaint plumbing (`set_request_repaint_callback` or the next `FullOutput`'s
+> `viewport_output` delay) — `render_frame` neither returns the decision nor installs the callback,
+> so the liveness contract currently depends on host wiring the doc does not specify. Open design
+> question, not yet resolved.
 
 ## 5. Workspace topology (summary; full rationale in `STRUCTURE.md`)
 
@@ -382,7 +404,10 @@ that *does* expose a sampleable-backdrop hook drops in as an additive adapter cr
   production-compositor standard (KWin, picom). ~2.8 ms @1080p on a 2015 tiler vs 23–42 ms naive
   Gaussian. A linear-sampled separable Gaussian is the fallback for a single small fixed radius.
 - **Linear-space convolution** (CONFIRMED). The **edge alpha convention** (premultiplied vs straight at
-  the translucent rounded-rect boundary) is now **FROZEN to straight alpha** (2026-06-05, IMPL §2d). The
+  the translucent rounded-rect boundary) is **FROZEN to straight alpha for the wgpu composite**
+  (2026-06-05, IMPL §2d). **As-built divergence:** the glow composite outputs **premultiplied** alpha
+  (`out_rgb = encode(...) · coverage; out_a = coverage` with `ONE, ONE_MINUS_SRC_ALPHA`) — a recorded,
+  deliberate per-backend split, not an accident (GLOW_IMPL §2f; its Tier-1 halo probe pins that path). The
   composite's coverage is **analytic** (the rounded-rect SDF, not a filtered alpha texture) and the edge
   color is constant, so the "over" blend is monotonic — there is no premultiplied/gamma halo to avoid.
   The §2d analytic oracle (`backdrop-blur-wgpu/tests/snapshot.rs::translucent_panel_edge_has_no_halo`)
@@ -399,7 +424,8 @@ that *does* expose a sampleable-backdrop hook drops in as an additive adapter cr
 - **Resource creation fails** → `Err(BlurError::ResourceCreation { stage, .. })`; the adapter logs and
   the surface renders without frost that frame. Never panics.
 - **Unsupported target format** → `Err(UnsupportedTarget)` from the lazy per-format pipeline build (M3).
-- **Resize / DPI change** → the `PingPongKey { size, format, levels }` chain is rebuilt; stale keys age out.
+- **Resize / DPI change** → the `PingPongKey { size, levels }` chain is rebuilt; stale keys age out
+  (the composite pipeline is keyed *separately* by target format — §4.4; the scratch key carries no format).
 - **Stale backdrop over animating content** → governed by the surface's `RepaintPolicy` (§4.6), a typed
   obligation, **not** an assumption that the host repaints.
 - **Overlapping / stacked frosted surfaces** → **out of v1** (§2). The seam blurs non-overlapping
@@ -430,14 +456,20 @@ that *does* expose a sampleable-backdrop hook drops in as an additive adapter cr
   `CornerRadius` clamp + logical→physical resolution producing `ResolvedMask`; `Region` clipping; the
   linear-space tint conversion. The pure heart. (The per-pixel SDF is the shader's; core's testable part
   is the resolved params — S9.)
-- **Backend tests** need a GPU: rendered against **lavapipe** for determinism (this repo's pattern),
-  committed snapshots of a frosted panel over a known backdrop in LTR/RTL — including the
-  **edge-halo probe** (straight vs premultiplied linear over a high-contrast edge) that settles §8.
+- **Backend tests** need a GPU: rendered against **lavapipe** for determinism (this repo's pattern).
+  **As-built:** these are **analytic property assertions on rendered pixels** (energy preservation,
+  edge registration, the **edge-halo probe** over a high-contrast edge in both directions), *not*
+  committed golden-image files — no reference PNGs exist or are diffed. The glow twin runs the same
+  class of oracles behind `gl-snapshots` on an EGL-surfaceless harness.
 - **Per-adapter example crates** are the visual proof (frosted panel over moving content, blur on/off A/B).
 - **Kiosk-cost benchmark** (named PARTIAL risk): dual-Kawase vs separable Gaussian at tooltip/dialog size,
   to convert the "performant on the deployment GPU" unknown into a measured fact.
-- **CI** runs per-crate `--all-features` + builds each example + verifies the MSRV (1.92) in a dedicated job. No
-  feature-powerset explosion (backend split is crate-level).
+- **CI** (as-built) runs a GPU-free default tier (`cargo test --workspace`), plus **deliberately narrow
+  gated jobs** — `image-snapshots` (lavapipe), `gl-snapshots` (EGL-surfaceless), a
+  `--no-default-features --features grab-pass` job with the `cargo tree -i wgpu` feature-unification
+  guard — builds each example manifest, and verifies the MSRV (1.92) in a dedicated job. **Not**
+  `--all-features` (the gated tiers are mutually exclusive slices by design). No feature-powerset
+  explosion (backend split is crate-level).
 
 ## 12. What this does NOT cover
 
