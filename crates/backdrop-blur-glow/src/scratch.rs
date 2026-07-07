@@ -130,6 +130,8 @@ impl ScratchCache {
         format: RenderableFloat,
         sizes: impl FnOnce() -> Vec<[u32; 2]>,
     ) -> Result<&[GlScratch], BlurError> {
+        // Two probes: returning the borrow from an early get_mut conflicts with the later insert
+        // under NLL (E0499), so the single-probe shape the wgpu twin uses is unavailable here.
         if !self.chains.contains_key(&key) {
             let slots = build_slots(gl, &sizes(), format)?;
             self.chains.insert(

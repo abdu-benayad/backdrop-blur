@@ -382,7 +382,6 @@ version = "0.0.0"
 dependencies = [
  "backdrop-blur-egui",
  "egui",
- "egui-wgpu",
  "png",
  "pollster",
  "wgpu",

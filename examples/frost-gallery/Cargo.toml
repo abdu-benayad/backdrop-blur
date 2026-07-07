@@ -8,7 +8,6 @@ description = "Headless frost gallery: renders the own-loop demo scene through O
 [dependencies]
 backdrop-blur-egui = { path = "../../crates/backdrop-blur-egui" }
 egui = "0.34"
-egui-wgpu = { version = "0.34", default-features = false }
 wgpu = "29"
 pollster = "0.4"
 png = "0.17"

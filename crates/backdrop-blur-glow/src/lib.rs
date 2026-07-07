@@ -123,8 +123,10 @@ pub struct GlowBlur {
 
 impl GlowBlur {
     /// Build the backend against a **live, current** GL context: probe its capabilities, compile +
-    /// link the programs under the right shader dialect, and create the shared VAO. On any failure
-    /// the partial GL state is cleaned up before returning.
+    /// link the programs under the right shader dialect, and create the shared VAO. Refuses a
+    /// context below the documented minimums — desktop GL 3.3, GLES 3.0, or WebGL 2.0 — with
+    /// [`BlurError::UnsupportedContext`]. On any failure the partial GL state is cleaned up before
+    /// returning.
     pub fn new(gl: &glow::Context) -> Result<Self, BlurError> {
         let profile = GlProfile::probe(gl)?;
         let programs = Programs::new(gl, &profile)?;

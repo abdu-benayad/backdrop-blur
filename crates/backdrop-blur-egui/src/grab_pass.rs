@@ -166,6 +166,9 @@ impl GrabPassRenderer {
         let mut guard = match self.blur.lock() {
             Ok(guard) => guard,
             Err(poisoned) => {
+                log::warn!(
+                    "backdrop-blur grab-pass mutex was poisoned by a prior panic; recovered during destroy"
+                );
                 self.blur.clear_poison();
                 poisoned.into_inner()
             }
