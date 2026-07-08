@@ -26,7 +26,7 @@ compiles neither wgpu nor egui-wgpu; an own-loop build is the default.
 
 ```toml
 [dependencies]
-backdrop-blur-egui = { version = "0.1", default-features = false, features = ["grab-pass"] }
+backdrop-blur-egui = { version = "0.2", default-features = false, features = ["grab-pass"] }
 ```
 
 ```rust,ignore

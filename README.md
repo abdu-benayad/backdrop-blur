@@ -23,7 +23,7 @@ The mainstream path. Build the renderer once from eframe's GL context, frost a s
 
 ```toml
 [dependencies]
-backdrop-blur-egui = { version = "0.1", default-features = false, features = ["grab-pass"] }
+backdrop-blur-egui = { version = "0.2", default-features = false, features = ["grab-pass"] }
 ```
 
 ```rust,ignore
