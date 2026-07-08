@@ -25,7 +25,7 @@ license = "MIT OR Apache-2.0"
 repository = "https://github.com/abdu-benayad/backdrop-blur"
 authors = ["Abdu Benayad <abdu.benayad@gmail.com>"]
 keywords = ["blur", "backdrop", "frosted-glass", "vibrancy", "gpu"]
-categories = ["graphics", "gui", "rendering"]
+categories = ["graphics", "gui", "rendering", "wasm"]
 
 [workspace.dependencies]
 # Internal crates — path + version so they are publishable as a set.
