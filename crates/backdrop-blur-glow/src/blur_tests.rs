@@ -1186,7 +1186,11 @@ fn resolve_target_encoding_reads_the_attachment_and_enable() {
             glow::COLOR_ATTACHMENT0,
             glow::FRAMEBUFFER_ATTACHMENT_COLOR_ENCODING,
         );
-        assert_eq!(rgba_off, glow::LINEAR as i32, "an RGBA8 attachment is LINEAR");
+        assert_eq!(
+            rgba_off,
+            glow::LINEAR as i32,
+            "an RGBA8 attachment is LINEAR"
+        );
         assert_eq!(
             rgba_on, rgba_off,
             "attachment encoding is orthogonal to the FRAMEBUFFER_SRGB enable"
@@ -1199,7 +1203,11 @@ fn resolve_target_encoding_reads_the_attachment_and_enable() {
             glow::COLOR_ATTACHMENT0,
             glow::FRAMEBUFFER_ATTACHMENT_COLOR_ENCODING,
         );
-        assert_eq!(srgb_enc, glow::SRGB as i32, "an SRGB8_ALPHA8 attachment is SRGB");
+        assert_eq!(
+            srgb_enc,
+            glow::SRGB as i32,
+            "an SRGB8_ALPHA8 attachment is SRGB"
+        );
         assert_eq!(
             gl.get_error(),
             glow::NO_ERROR,
@@ -1295,7 +1303,8 @@ fn linear_branch_lets_hardware_encode_to_an_srgb_target() {
         .prepare(&gl, &(), &source, FramebufferSize([DIM, DIM]), &request)
         .expect("prepare")
         .expect("non-empty region prepares a blur");
-    blur.record(&mut gl, &Some(t_fbo), prepared).expect("record");
+    blur.record(&mut gl, &Some(t_fbo), prepared)
+        .expect("record");
     // SAFETY: flush so the readback sees the composite.
     unsafe { gl.finish() };
 
