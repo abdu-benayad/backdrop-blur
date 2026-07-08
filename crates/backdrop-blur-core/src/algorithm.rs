@@ -71,6 +71,15 @@ pub fn use_dual_kawase(physical_radius: f32) -> bool {
 /// continuous-slider host that wants smooth control would add a fractional-`log2` offset to the
 /// backend's Kawase params and scale the taps by it (KWin's continuous dial), which v1
 /// deliberately omits (YAGNI).
+///
+/// **Monotonicity is a contract.** This function is monotonic non-decreasing in `physical_radius`.
+/// Glow's scratch-cache disjointness proof (`backdrop-blur-glow`'s `scratch.rs`) depends on it: the
+/// Gaussian and dual-Kawase chains share one cache and stay disjoint only because every radius that
+/// *selects* Kawase (`>= KAWASE_THRESHOLD_PX`) resolves to `>= 2` levels, and monotonicity is what
+/// lets the single-point check at the threshold bound the whole domain. A fractional-`log2` offset
+/// (the deferred continuous-slider change above) that introduced a mid-domain dip back to `1` would
+/// reopen cache-key aliasing — so any such change must preserve monotonicity or re-guard at
+/// `PingPongKey` construction.
 pub fn resolve_kawase_levels(physical_radius: f32) -> u32 {
     let levels = physical_radius.max(2.0).log2().round() as i32;
     levels.clamp(1, MAX_KAWASE_LEVELS as i32) as u32
@@ -160,7 +169,7 @@ mod tests {
 
     #[test]
     fn resolve_kawase_levels_grows_logarithmically_and_clamps() {
-        assert_eq!(resolve_kawase_levels(16.0), 4); // log2(16) = 4
+        assert_eq!(resolve_kawase_levels(KAWASE_THRESHOLD_PX), 4); // log2(16) = 4
         assert_eq!(resolve_kawase_levels(32.0), 5);
         assert_eq!(resolve_kawase_levels(10000.0), MAX_KAWASE_LEVELS);
         assert_eq!(resolve_kawase_levels(2.0), 1); // clamped floor
@@ -168,6 +177,23 @@ mod tests {
         // is locked rather than incidental — swapping round/floor/ceil would change these.
         assert_eq!(resolve_kawase_levels(22.0), 4);
         assert_eq!(resolve_kawase_levels(23.0), 5);
+    }
+
+    #[test]
+    fn kawase_never_keys_a_single_level_where_it_is_selected() {
+        // Scratch-cache disjointness (glow `scratch.rs`): the Gaussian path keys a `levels == 1`
+        // chain, the dual-Kawase path a `levels >= 2` pyramid, in one shared cache keyed by
+        // (size, levels). They never alias only because Kawase is selected exclusively at/above
+        // KAWASE_THRESHOLD_PX, and `resolve_kawase_levels` — monotonic in radius — already returns
+        // >= 2 there. `resolve_kawase_levels` *can* return 1 (its clamped floor at radius 2.0), so
+        // this is a coupling of two independent constants, not a property of the resolver alone.
+        // Pin it at the smallest radius that selects Kawase; monotonicity extends it to all larger.
+        assert!(use_dual_kawase(KAWASE_THRESHOLD_PX));
+        assert!(
+            resolve_kawase_levels(KAWASE_THRESHOLD_PX) >= 2,
+            "Kawase selected at radius {KAWASE_THRESHOLD_PX} resolves to {} level(s) — would alias a Gaussian levels==1 cache key",
+            resolve_kawase_levels(KAWASE_THRESHOLD_PX)
+        );
     }
 
     #[test]
