@@ -29,9 +29,9 @@ categories = ["graphics", "gui", "rendering"]
 
 [workspace.dependencies]
 # Internal crates — path + version so they are publishable as a set.
-backdrop-blur-core = { path = "crates/backdrop-blur-core", version = "0.1.0" }
-backdrop-blur-wgpu = { path = "crates/backdrop-blur-wgpu", version = "0.1.0" }
-backdrop-blur-glow = { path = "crates/backdrop-blur-glow", version = "0.1.0" }
+backdrop-blur-core = { path = "crates/backdrop-blur-core", version = "0.2.0" }
+backdrop-blur-wgpu = { path = "crates/backdrop-blur-wgpu", version = "0.2.0" }
+backdrop-blur-glow = { path = "crates/backdrop-blur-glow", version = "0.2.0" }
 
 # Error model — thiserror 2 (structured variants, never a String error). Core forbids
 # unsafe and has no GPU dep, so it cannot name a backend error: BlurError carries a
