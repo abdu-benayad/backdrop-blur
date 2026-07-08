@@ -33,7 +33,7 @@ Depend on `backdrop-blur-core` directly only to implement a **new backend** agai
 
 ## Status
 
-Pre-release (`0.1.x`). The API is **not yet stable** — expect breaking changes before `1.0`, and pin
+Pre-release (`0.2.x`). The API is **not yet stable** — expect breaking changes before `1.0`, and pin
 an exact version.
 
 See [`docs/DESIGN.md`](https://github.com/abdu-benayad/backdrop-blur/blob/main/docs/DESIGN.md) (§4 is

@@ -25,7 +25,7 @@ rather than this crate directly. Reach for `backdrop-blur-wgpu` when you drive w
 
 ## Status
 
-Pre-release (`0.1.x`). The API is **not yet stable** — pin an exact version.
+Pre-release (`0.2.x`). The API is **not yet stable** — pin an exact version.
 
 See [`docs/IMPL.md`](https://github.com/abdu-benayad/backdrop-blur/blob/main/docs/IMPL.md) for the
 build sequence and [`docs/DESIGN.md`](https://github.com/abdu-benayad/backdrop-blur/blob/main/docs/DESIGN.md)

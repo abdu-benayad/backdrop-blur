@@ -74,7 +74,7 @@ Independent knobs — conflating them is the most common "my glass looks wrong":
 
 ## Status
 
-Pre-release (`0.1.x`). The API is **not yet stable** — expect breaking changes before `1.0`, and pin
+Pre-release (`0.2.x`). The API is **not yet stable** — expect breaking changes before `1.0`, and pin
 an exact version.
 
 A full runnable example lives at

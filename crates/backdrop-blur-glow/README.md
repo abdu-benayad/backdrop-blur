@@ -41,7 +41,7 @@ rather than this crate directly.
 
 ## Status
 
-Pre-release (`0.1.x`). The API is **not yet stable** — pin an exact version.
+Pre-release (`0.2.x`). The API is **not yet stable** — pin an exact version.
 
 See [`docs/GLOW_DESIGN.md`](https://github.com/abdu-benayad/backdrop-blur/blob/main/docs/GLOW_DESIGN.md)
 and [`docs/GLOW_IMPL.md`](https://github.com/abdu-benayad/backdrop-blur/blob/main/docs/GLOW_IMPL.md).

@@ -10,7 +10,7 @@ vibrancy, Vello does *shape* blur; neither is in-app, arbitrary-surface backdrop
 crate fills that gap once, so each toolkit needs only a thin adapter instead of re-deriving
 the render-to-texture + multi-tap convolution every time.
 
-> **Status: pre-release (`0.1.x`).** The safe wgpu/own-loop slice and the glow grab-pass backend are
+> **Status: pre-release (`0.2.x`).** The safe wgpu/own-loop slice and the glow grab-pass backend are
 > built and tested. The API is **not yet stable** — expect breaking changes before `1.0`, and pin an
 > exact version. See [`docs/IMPL.md`](docs/IMPL.md) and [`docs/GLOW_IMPL.md`](docs/GLOW_IMPL.md) for
 > the build sequence.
@@ -62,7 +62,7 @@ An egui-ecosystem crate is bound to one egui minor. Pin to a row:
 
 | `backdrop-blur-*` | egui | egui_glow / egui-wgpu | wgpu | glow | MSRV |
 |---|---|---|---|---|---|
-| `0.1.x` | `0.34` | `0.34` | `29` | `0.17` | `1.92` |
+| `0.2.x` | `0.34` | `0.34` | `29` | `0.17` | `1.92` |
 
 - **Feature flags** (`backdrop-blur-egui`): `grab-pass` → the glow/eframe path (pulls glow, **no
   wgpu** — the kiosk-light config); `own-loop` (default) → the egui-wgpu path (pulls the wgpu stack).
