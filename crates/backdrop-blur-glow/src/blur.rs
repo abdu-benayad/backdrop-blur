@@ -279,16 +279,18 @@ impl GlowBlur {
         // Composite into the captured target (the live draw FBO). The composite samples the final
         // linear scratch: Gaussian B, or Kawase mip 0.
         // SAFETY: `*target` is the caller's captured draw framebuffer (None = default FB 0); binding
-        // it on the current context is sound. composite::draw reads the encode bit from the global
-        // GL_FRAMEBUFFER_SRGB enable (bind-independent), so this bind ordering is for the draw target,
-        // not for the encode query.
+        // it on the current context is sound. This bind is now **load-bearing for the encode
+        // decision**: `resolve_target_encoding` queries the just-bound draw FBO's colour-attachment
+        // encoding, so it must run after this bind — it does.
         unsafe { gl.bind_framebuffer(glow::DRAW_FRAMEBUFFER, *target) };
+        let target_encoding = composite::resolve_target_encoding(gl, &self.profile, *target);
         composite::draw(
             gl,
             &self.programs,
             self.vao,
             prepared.final_scratch(),
             &prepared.composite,
+            target_encoding,
         );
         saved.restore(gl);
         Ok(())

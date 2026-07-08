@@ -53,6 +53,11 @@ pub struct GlProfile {
     pub shader_class: ShaderClass,
     /// Whether this is an embedded context (GLES / WebGL2) vs desktop GL.
     pub embedded: bool,
+    /// Whether `GL_FRAMEBUFFER_SRGB` is a *valid* capability to query on this context — core on
+    /// desktop GL, present on a GLES context only via `EXT_sRGB_write_control`, and absent on core
+    /// GLES 3.0 / WebGL2 (where querying the enum raises `GL_INVALID_ENUM`). Gates whether the
+    /// composite's encode resolver may consult the enable ([`crate::composite::resolve_target_encoding`]).
+    pub srgb_enable_is_queryable: bool,
     /// The scratch/grab float format this context can render to.
     pub renderable_float: RenderableFloat,
     /// The default framebuffer's sample count (`GL_SAMPLES`); `> 0` means the grab must resolve
@@ -207,9 +212,24 @@ pub fn classify(version: &str, extensions: &[&str], samples: i32) -> Result<GlPr
         "the sRGB8_ALPHA8 fallback is color-correct only on embedded (GLES/WebGL2) contexts, where \
          sRGB encode-on-write is automatic; a desktop GL context must resolve to RGBA16F"
     );
+    // `GL_FRAMEBUFFER_SRGB` is a core enable on desktop GL, exposed on a GLES context only via
+    // `EXT_sRGB_write_control`, and absent on core GLES 3.0 / WebGL2 (querying it raises
+    // `GL_INVALID_ENUM`). The extension may appear with or without the `GL_` prefix.
+    let srgb_enable_is_queryable = !embedded
+        || extensions
+            .iter()
+            .any(|e| *e == "EXT_sRGB_write_control" || *e == "GL_EXT_sRGB_write_control");
+    // Invariant (implication form): desktop (!embedded) ⟹ the enable is queryable (core capability).
+    // Mirrors the `renderable_float` implication above so a future edit to the `!embedded ||` term
+    // cannot silently produce a desktop profile that skips the enable gate.
+    debug_assert!(
+        embedded || srgb_enable_is_queryable,
+        "desktop GL always exposes GL_FRAMEBUFFER_SRGB as a core capability"
+    );
     Ok(GlProfile {
         shader_class,
         embedded,
+        srgb_enable_is_queryable,
         renderable_float,
         samples: samples.max(0),
     })
@@ -376,5 +396,50 @@ mod tests {
             classify("OpenGL ES Mesa", &[], 0).expect("numberless embedded strings pass ungated");
         assert!(p.embedded);
         assert_eq!(p.shader_class, ShaderClass::Es300);
+    }
+
+    #[test]
+    fn desktop_gl_can_always_query_the_srgb_enable() {
+        // GL_FRAMEBUFFER_SRGB is core on desktop GL — no extension needed.
+        let p = classify("4.6.0 NVIDIA 535.288.01", &[], 0).expect("classify");
+        assert!(!p.embedded);
+        assert!(p.srgb_enable_is_queryable);
+    }
+
+    #[test]
+    fn core_gles3_and_webgl2_cannot_query_the_srgb_enable() {
+        // Core GLES 3.0 / WebGL2 have no GL_FRAMEBUFFER_SRGB — querying it raises GL_INVALID_ENUM.
+        let gles = classify("OpenGL ES 3.0 Mesa", &[], 0).expect("classify");
+        assert!(gles.embedded);
+        assert!(!gles.srgb_enable_is_queryable);
+        let web = classify("WebGL 2.0 (OpenGL ES 3.0 Chromium)", &[], 0).expect("classify");
+        assert!(web.embedded);
+        assert!(!web.srgb_enable_is_queryable);
+    }
+
+    #[test]
+    fn gles3_with_srgb_write_control_can_query_the_enable() {
+        // A GLES context advertising EXT_sRGB_write_control exposes GL_FRAMEBUFFER_SRGB — with or
+        // without the `GL_` prefix, mirroring the float-extension accessor.
+        let p = classify("OpenGL ES 3.2 NVIDIA", &["EXT_sRGB_write_control"], 0).expect("classify");
+        assert!(p.srgb_enable_is_queryable);
+        let prefixed =
+            classify("OpenGL ES 3.2 NVIDIA", &["GL_EXT_sRGB_write_control"], 0).expect("classify");
+        assert!(prefixed.srgb_enable_is_queryable);
+    }
+
+    #[test]
+    fn the_srgb_enable_is_always_queryable_on_a_desktop_profile() {
+        // The invariant `debug_assert`ed in `classify`: desktop ⟹ queryable, independent of any
+        // extension string. Mirrors `the_srgb8_fallback_is_never_paired_with_a_desktop_profile`.
+        for ext in [
+            vec![],
+            vec!["EXT_sRGB_write_control"],
+            vec!["GL_EXT_color_buffer_float"],
+        ] {
+            let p = classify("4.6.0 NVIDIA 535.288.01", &ext, 0).expect("classify");
+            assert!(!p.embedded);
+            assert!(p.srgb_enable_is_queryable);
+        }
     }
 }
