@@ -9,7 +9,9 @@
 use super::*;
 use crate::GlowBlur;
 use crate::gl_harness::{headless_gl, read_texture_rgba8};
-use backdrop_blur_core::{BlurRadius, CornerRadius, LinearRgba, Presence, Region, Scale, Tint};
+use backdrop_blur_core::{
+    BlurRadius, CornerRadius, LinearRgba, Presence, Region, Scale, TargetEncoding, Tint,
+};
 use glow::HasContext;
 
 const DIM: u32 = 128;
@@ -26,8 +28,13 @@ struct Target {
     tex: glow::Texture,
 }
 
-/// Create an empty `DIM×DIM` RGBA8 FBO. Caller paints it, then frees via [`free_fbo`].
-fn make_fbo(gl: &glow::Context) -> (glow::Framebuffer, glow::Texture) {
+/// Create an empty `DIM×DIM` FBO with the given colour internal format. Caller paints it, then frees
+/// via [`free_fbo`]. `SRGB8_ALPHA8` yields an sRGB-capable target (the hardware encodes linear→sRGB on
+/// write when `GL_FRAMEBUFFER_SRGB` is enabled); `RGBA8` a plain linear/`Unorm` target.
+fn make_fbo_with_format(
+    gl: &glow::Context,
+    internal_format: i32,
+) -> (glow::Framebuffer, glow::Texture) {
     // SAFETY: standard FBO setup on the current harness context; handles are returned for the test
     // to free. `Slice(None)` allocates without uploading.
     unsafe {
@@ -36,7 +43,7 @@ fn make_fbo(gl: &glow::Context) -> (glow::Framebuffer, glow::Texture) {
         gl.tex_image_2d(
             glow::TEXTURE_2D,
             0,
-            glow::RGBA8 as i32,
+            internal_format,
             DIM as i32,
             DIM as i32,
             0,
@@ -66,11 +73,16 @@ fn make_fbo(gl: &glow::Context) -> (glow::Framebuffer, glow::Texture) {
         assert_eq!(
             gl.check_framebuffer_status(glow::FRAMEBUFFER),
             glow::FRAMEBUFFER_COMPLETE,
-            "scene FBO incomplete"
+            "FBO incomplete"
         );
         gl.bind_framebuffer(glow::FRAMEBUFFER, None);
         (fbo, tex)
     }
+}
+
+/// Create an empty `DIM×DIM` RGBA8 FBO. Caller paints it, then frees via [`free_fbo`].
+fn make_fbo(gl: &glow::Context) -> (glow::Framebuffer, glow::Texture) {
+    make_fbo_with_format(gl, glow::RGBA8 as i32)
 }
 
 fn free_fbo(gl: &glow::Context, fbo: glow::Framebuffer, tex: glow::Texture) {
@@ -1132,4 +1144,181 @@ fn presence_fades_the_surface_linearly_toward_the_destination() {
     free_fbo(&gl, t0.fbo, t0.tex);
     free_fbo(&gl, thalf.fbo, thalf.tex);
     free_fbo(&gl, t1.fbo, t1.tex);
+}
+
+// --- G1/G2: attachment-resolved encode — decision guard (5a) + hardware-encode rendering (5b) ---
+
+/// 5a — [`resolve_target_encoding`](crate::composite::resolve_target_encoding) reads the bound
+/// target's colour-attachment encoding and, where the enable is a valid capability (desktop GL here),
+/// the `GL_FRAMEBUFFER_SRGB` state. A non-sRGB (RGBA8) attachment always resolves to `Srgb` (the
+/// shader must encode); an sRGB (`SRGB8_ALPHA8`) attachment's encode follows the enable. Also pins the
+/// **orthogonality** the resolver relies on — the reported attachment encoding does not move with the
+/// enable — and that the `COLOR_ENCODING` query is **error-clean** on this dialect (the G1 property).
+#[test]
+fn resolve_target_encoding_reads_the_attachment_and_enable() {
+    let gl = headless_gl();
+    let profile = crate::GlProfile::probe(&gl).expect("desktop profile");
+    assert!(!profile.embedded, "the surfaceless harness is desktop GL");
+    assert!(
+        profile.srgb_enable_is_queryable,
+        "desktop GL exposes GL_FRAMEBUFFER_SRGB as a core capability"
+    );
+
+    let (srgb_fbo, srgb_tex) = make_fbo_with_format(&gl, glow::SRGB8_ALPHA8 as i32);
+    let (rgba_fbo, rgba_tex) = make_fbo(&gl);
+
+    // SAFETY: read-only attachment/enable queries + enable toggles on the current context; the
+    // FRAMEBUFFER_SRGB enable is restored to its entry state before returning.
+    unsafe {
+        let entry_enabled = gl.is_enabled(glow::FRAMEBUFFER_SRGB);
+
+        // Orthogonality: the RGBA8 attachment reports LINEAR encoding, unchanged by the enable.
+        gl.bind_framebuffer(glow::DRAW_FRAMEBUFFER, Some(rgba_fbo));
+        gl.disable(glow::FRAMEBUFFER_SRGB);
+        let rgba_off = gl.get_framebuffer_attachment_parameter_i32(
+            glow::DRAW_FRAMEBUFFER,
+            glow::COLOR_ATTACHMENT0,
+            glow::FRAMEBUFFER_ATTACHMENT_COLOR_ENCODING,
+        );
+        gl.enable(glow::FRAMEBUFFER_SRGB);
+        let rgba_on = gl.get_framebuffer_attachment_parameter_i32(
+            glow::DRAW_FRAMEBUFFER,
+            glow::COLOR_ATTACHMENT0,
+            glow::FRAMEBUFFER_ATTACHMENT_COLOR_ENCODING,
+        );
+        assert_eq!(rgba_off, glow::LINEAR as i32, "an RGBA8 attachment is LINEAR");
+        assert_eq!(
+            rgba_on, rgba_off,
+            "attachment encoding is orthogonal to the FRAMEBUFFER_SRGB enable"
+        );
+
+        // The SRGB8_ALPHA8 attachment reports SRGB, and the query raises no GL error on desktop GL.
+        gl.bind_framebuffer(glow::DRAW_FRAMEBUFFER, Some(srgb_fbo));
+        let srgb_enc = gl.get_framebuffer_attachment_parameter_i32(
+            glow::DRAW_FRAMEBUFFER,
+            glow::COLOR_ATTACHMENT0,
+            glow::FRAMEBUFFER_ATTACHMENT_COLOR_ENCODING,
+        );
+        assert_eq!(srgb_enc, glow::SRGB as i32, "an SRGB8_ALPHA8 attachment is SRGB");
+        assert_eq!(
+            gl.get_error(),
+            glow::NO_ERROR,
+            "the COLOR_ENCODING query is error-clean on desktop GL (the G1 property)"
+        );
+
+        // Resolver: non-sRGB target ⇒ Srgb, with the enable off OR on.
+        gl.bind_framebuffer(glow::DRAW_FRAMEBUFFER, Some(rgba_fbo));
+        gl.disable(glow::FRAMEBUFFER_SRGB);
+        assert_eq!(
+            crate::composite::resolve_target_encoding(&gl, &profile, Some(rgba_fbo)),
+            TargetEncoding::Srgb
+        );
+        gl.enable(glow::FRAMEBUFFER_SRGB);
+        assert_eq!(
+            crate::composite::resolve_target_encoding(&gl, &profile, Some(rgba_fbo)),
+            TargetEncoding::Srgb,
+            "a non-sRGB target never lets the hardware encode, even with the enable on"
+        );
+
+        // Resolver: sRGB target ⇒ follows the (valid) enable.
+        gl.bind_framebuffer(glow::DRAW_FRAMEBUFFER, Some(srgb_fbo));
+        gl.disable(glow::FRAMEBUFFER_SRGB);
+        assert_eq!(
+            crate::composite::resolve_target_encoding(&gl, &profile, Some(srgb_fbo)),
+            TargetEncoding::Srgb,
+            "sRGB target, write-encode off: the shader must encode"
+        );
+        gl.enable(glow::FRAMEBUFFER_SRGB);
+        assert_eq!(
+            crate::composite::resolve_target_encoding(&gl, &profile, Some(srgb_fbo)),
+            TargetEncoding::Linear,
+            "sRGB target, write-encode on: the hardware encodes"
+        );
+
+        if entry_enabled {
+            gl.enable(glow::FRAMEBUFFER_SRGB);
+        } else {
+            gl.disable(glow::FRAMEBUFFER_SRGB);
+        }
+        gl.bind_framebuffer(glow::DRAW_FRAMEBUFFER, None);
+    }
+
+    free_fbo(&gl, srgb_fbo, srgb_tex);
+    free_fbo(&gl, rgba_fbo, rgba_tex);
+}
+
+/// 5b — the `TargetEncoding::Linear` branch, **render-verified**. With an `SRGB8_ALPHA8` target and
+/// `GL_FRAMEBUFFER_SRGB` enabled the resolver yields `Linear`, so the composite shader skips its own
+/// OETF and the hardware encodes linear→sRGB on write. Compositing the same linear `0.85` the
+/// manual-encode oracle uses (`composite_encodes_linear_through_the_glsl_at_two_operating_points`)
+/// must read back the SAME canonical byte ≈237 — proving the encode happens exactly **once**. A wrong
+/// `Srgb` resolution (the shader *also* encodes) double-encodes to ≈247; the band around 237 excludes
+/// it. `0.85` is the existing oracle's proven-separated operating point (near 0/1 the sRGB OETF fixed
+/// points would collapse the single/double/raw values together).
+///
+/// This is the first test to exercise hardware sRGB encode-on-write on this harness. If a driver does
+/// not honour it, this test fails distinctively (≈217, the raw-linear value) — at which point the
+/// `Linear` branch would need a decision-only guard and the harness limitation recorded here.
+#[test]
+fn linear_branch_lets_hardware_encode_to_an_srgb_target() {
+    let mut gl = headless_gl();
+    let mut blur = GlowBlur::new(&gl).expect("new");
+    // Red backdrop: byte 255 → linear 1.0 exactly, so the tint film alone sets the linear output.
+    let scene = flat_backdrop(&gl, [1.0, 0.0, 0.0, 1.0]);
+    let p = panel([24, 24], [80, 80]);
+
+    // An sRGB target; turn on hardware sRGB write-encode (restored at the end).
+    let (t_fbo, t_tex) = make_fbo_with_format(&gl, glow::SRGB8_ALPHA8 as i32);
+    // SAFETY: read + set the enable on the current context; restored before returning.
+    let entry_enabled = unsafe {
+        let was = gl.is_enabled(glow::FRAMEBUFFER_SRGB);
+        gl.enable(glow::FRAMEBUFFER_SRGB);
+        was
+    };
+    clear_fbo(&gl, t_fbo, [0.0, 0.0, 0.0, 1.0]);
+
+    // Grab → prepare → record into the caller-supplied sRGB target (mirrors `frost`).
+    let region = GlRegion::from_bottom_px(p.origin, p.size, Scale::new(1.0));
+    let source = blur
+        .grab_source(&gl, &(), &Some(scene.fbo), region)
+        .expect("grab");
+    let request = BlurRequest {
+        source_region: p,
+        target_rect: p,
+        blur_radius: BlurRadius::new(30.0),
+        // Black film, alpha 0.15 → linear 0.85 red (the oracle's Point A).
+        tint: Tint::new(LinearRgba::new(0.0, 0.0, 0.0, 0.15)),
+        corner_radius: CornerRadius::new(0.0),
+        presence: Presence::new(1.0),
+    };
+    let prepared = blur
+        .prepare(&gl, &(), &source, FramebufferSize([DIM, DIM]), &request)
+        .expect("prepare")
+        .expect("non-empty region prepares a blur");
+    blur.record(&mut gl, &Some(t_fbo), prepared).expect("record");
+    // SAFETY: flush so the readback sees the composite.
+    unsafe { gl.finish() };
+
+    let r = i32::from(read_texture_rgba8(&gl, t_tex, 64, 64)[0]);
+    const TOL: i32 = 7;
+    // The band [230,244] discriminates all three outcomes: correct single-encode 237 (in), the
+    // shader-double-encode 247 (`srgb(srgb(0.85))·255`, out by 3), and raw-linear 217 (`0.85·255`,
+    // no encode, out by 13). Measured 237 on this harness — exactly the canonical single encode.
+    assert!(
+        (237 - TOL..=237 + TOL).contains(&r),
+        "the Linear branch must let the hardware encode 0.85 exactly once (≈237): got r={r} \
+         (≈247 = shader double-encoded; ≈217 = raw linear, no encode)"
+    );
+
+    // SAFETY: restore the enable to its entry state.
+    unsafe {
+        if entry_enabled {
+            gl.enable(glow::FRAMEBUFFER_SRGB);
+        } else {
+            gl.disable(glow::FRAMEBUFFER_SRGB);
+        }
+    }
+    blur.destroy(&gl);
+    free_fbo(&gl, scene.fbo, scene.tex);
+    free_fbo(&gl, t_fbo, t_tex);
 }
