@@ -99,9 +99,13 @@ pub fn kawase_halfpixel(size: [u32; 2]) -> [f32; 2] {
 
 /// Whether the composite shader writes a **linear** target (hardware encodes, or a float target)
 /// or must **manually re-encode** linear→sRGB for a gamma `Unorm` target. The shared encode
-/// vocabulary: the wgpu backend derives it from a `wgpu::TextureFormat` allowlist, the glow
-/// backend from the live context's sRGB-framebuffer state — but both speak this type so the
-/// composite shader's "encode?" branch reads the same on either path.
+/// vocabulary both backends speak, each resolving it from what it can see: the wgpu backend from a
+/// `wgpu::TextureFormat` allowlist (at `prepare`, from the static target format); the glow backend at
+/// `record` time from the captured target's colour-attachment encoding
+/// (`GL_FRAMEBUFFER_ATTACHMENT_COLOR_ENCODING`), consulting the `GL_FRAMEBUFFER_SRGB` write-encode
+/// enable only where it is a valid capability. They resolve at *different phases* because glow's seam
+/// hands the target framebuffer to `record`, never `prepare` — but the composite shader's "encode?"
+/// branch reads the same `TargetEncoding` on either path.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TargetEncoding {
     /// The target is linear (a `*Srgb` format that encodes in hardware, or a float target): the

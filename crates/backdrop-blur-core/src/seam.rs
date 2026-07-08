@@ -29,8 +29,9 @@
 //! `Option<glow::Framebuffer>` — the live draw FBO, `None` = the default framebuffer); the one `()`
 //! (`Queue`) is honest because glow uploads through its context rather than a queue, and
 //! `TargetSpec` is the **framebuffer size** (the composite viewport): the composite needs the full
-//! draw-target size for its full-framebuffer `glViewport`, and the encode bit is derived at draw
-//! time from the live context's `GL_FRAMEBUFFER_SRGB` state rather than from a format token.
+//! draw-target size for its full-framebuffer `glViewport`, and the encode bit is resolved at record
+//! time from the captured target's colour-attachment encoding (consulting `GL_FRAMEBUFFER_SRGB` only
+//! where it is a valid capability) rather than from a format token.
 //! v1 therefore ships **with** these traits, not a concrete one-backend pair.
 //!
 //! [`backdrop-blur-glow`]: https://github.com/abdu-benayad/backdrop-blur
