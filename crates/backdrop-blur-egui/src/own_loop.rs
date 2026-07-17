@@ -148,38 +148,60 @@ impl OwnLoopRenderer {
         })
     }
 
-    /// The intermediate sized to `size`, recreated only on a size change. Total — no panic path:
-    /// a stale intermediate is dropped, then `get_or_insert_with` constructs or returns the cached
-    /// one.
-    fn intermediate(&mut self, device: &wgpu::Device, size: [u32; 2]) -> &Intermediate {
-        if self.intermediate.as_ref().is_none_or(|i| i.size != size) {
-            self.intermediate = None;
-        }
-        let format = self.target_format;
-        self.intermediate.get_or_insert_with(|| {
-            let texture = device.create_texture(&wgpu::TextureDescriptor {
-                label: Some("backdrop-blur egui intermediate"),
-                size: wgpu::Extent3d {
-                    width: size[0].max(1),
-                    height: size[1].max(1),
-                    depth_or_array_layers: 1,
-                },
-                mip_level_count: 1,
-                sample_count: 1,
-                dimension: wgpu::TextureDimension::D2,
-                format,
-                usage: wgpu::TextureUsages::RENDER_ATTACHMENT
-                    | wgpu::TextureUsages::TEXTURE_BINDING,
-                view_formats: &[],
-            });
-            Intermediate { texture, size }
-        })
+    /// The intermediate sized to `size`, recreated only on a size change. Total — no panic path: a
+    /// stale-size intermediate is dropped, a matching one reused, or a fresh one created inside an
+    /// `OutOfMemory` error scope (returning [`BlurError::DeviceOutOfMemory`] on a device
+    /// out-of-memory rather than panicking — native-only). [`Option::insert`] then stores and
+    /// returns it without any `unwrap`.
+    fn intermediate(
+        &mut self,
+        device: &wgpu::Device,
+        size: [u32; 2],
+    ) -> Result<&Intermediate, BlurError> {
+        // Take the cached intermediate, keeping it only if its size still matches. A stale one is
+        // dropped here (freeing its texture) *before* the new allocation is attempted.
+        let reuse = self.intermediate.take().filter(|i| i.size == size);
+        let intermediate = match reuse {
+            Some(existing) => existing,
+            None => {
+                let format = self.target_format;
+                let texture = scoped_oom(device, || {
+                    device.create_texture(&wgpu::TextureDescriptor {
+                        label: Some("backdrop-blur egui intermediate"),
+                        size: wgpu::Extent3d {
+                            width: size[0].max(1),
+                            height: size[1].max(1),
+                            depth_or_array_layers: 1,
+                        },
+                        mip_level_count: 1,
+                        sample_count: 1,
+                        dimension: wgpu::TextureDimension::D2,
+                        format,
+                        usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                            | wgpu::TextureUsages::TEXTURE_BINDING,
+                        view_formats: &[],
+                    })
+                })?;
+                Intermediate { texture, size }
+            }
+        };
+        Ok(self.intermediate.insert(intermediate))
     }
 
     /// Render one frosted frame. `ctx` is the host's egui context: the adapter applies the
     /// surfaces' [`RepaintPolicy`] to it (`request_repaint` for `Live`, `request_repaint_after`
     /// for `Bounded`) so a stale backdrop cannot be silently forgotten (§4.6 — the adapter, not
     /// the host, drives the repaint). `frame` carries the tessellated egui output + the target.
+    ///
+    /// **Out-of-memory contract (native).** `backdrop-blur`'s own resource creation — the
+    /// intermediate texture here, plus the blur backend's textures, buffers, pipelines, and bind
+    /// groups — returns [`BlurError::DeviceOutOfMemory`] on a device out-of-memory instead of
+    /// panicking. On that `Err` nothing has been submitted (the `?` returns before `queue.submit`),
+    /// so this frame produced nothing: do not present it, re-request a repaint, and retry unfrosted
+    /// or shed surfaces. This is **not** a blanket "never panics" — allocations *inside*
+    /// `egui_wgpu::Renderer` (font-atlas growth in `update_texture`, vertex/index buffer growth in
+    /// `update_buffers`/`render`) are third-party and cannot be scoped by this crate; an
+    /// out-of-memory there still reaches wgpu's default (panicking) handler.
     pub fn render_frame(
         &mut self,
         device: &wgpu::Device,
@@ -212,7 +234,7 @@ impl OwnLoopRenderer {
         // (the pass clones it via forget_lifetime) and then moved into the blur `SourceView`.
         let size = frame.screen.size_in_pixels;
         let intermediate_view = self
-            .intermediate(device, size)
+            .intermediate(device, size)?
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
 
@@ -290,6 +312,39 @@ pub struct FrameInput<'a> {
     pub textures_delta: &'a egui::TexturesDelta,
     /// Screen size (physical px) + pixels-per-point.
     pub screen: egui_wgpu::ScreenDescriptor,
+}
+
+/// Poll a future exactly once, returning its output if already ready. Mirrors the wgpu backend's
+/// helper: on the native backend an error scope's `pop()` future is already-resolved, so a single
+/// poll suffices with no executor. `Pending` is the non-native path this crate does not support.
+fn poll_once<F: std::future::Future>(fut: F) -> Option<F::Output> {
+    let mut fut = std::pin::pin!(fut);
+    let waker = std::task::Waker::noop();
+    let mut cx = std::task::Context::from_waker(waker);
+    match fut.as_mut().poll(&mut cx) {
+        std::task::Poll::Ready(v) => Some(v),
+        std::task::Poll::Pending => None,
+    }
+}
+
+/// Run `create` inside an [`OutOfMemory`](wgpu::ErrorFilter::OutOfMemory) error scope and map a
+/// captured allocation failure to [`BlurError::DeviceOutOfMemory`]. A deliberate local mirror of the
+/// wgpu backend's private `scoped_oom`, duplicated rather than exposing that helper as public API.
+/// Native-only: the scope is read synchronously (see [`poll_once`]); the result MUST be checked
+/// (`?`) before the handle is consumed — an out-of-memory handle consumed downstream raises an
+/// uncatchable `Validation` error (wgpu's contagious invalidity).
+fn scoped_oom<T>(device: &wgpu::Device, create: impl FnOnce() -> T) -> Result<T, BlurError> {
+    let scope = device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
+    let resource = create();
+    match poll_once(scope.pop()) {
+        Some(None) => Ok(resource),
+        Some(Some(err)) => Err(BlurError::DeviceOutOfMemory {
+            source: Box::new(err),
+        }),
+        None => panic!(
+            "backdrop-blur: OOM error scope did not resolve synchronously; native-only path (design v5)"
+        ),
+    }
 }
 
 /// Begin a render pass that clears `view`, returning a `'static` pass (egui-wgpu's `render`
