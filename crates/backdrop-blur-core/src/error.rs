@@ -17,6 +17,7 @@ pub type BackendError = Box<dyn std::error::Error + Send + Sync + 'static>;
 /// sentence; `ResourceCreation.stage` localizes a 3 AM kiosk failure to the exact resource
 /// that died.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum BlurError {
     /// A GPU resource could not be created during `prepare`.
     #[error("failed to create the {stage} while preparing the blur")]
@@ -24,6 +25,21 @@ pub enum BlurError {
         /// Which resource failed.
         stage: BlurStage,
         /// The backend's underlying error.
+        #[source]
+        source: BackendError,
+    },
+
+    /// The device ran out of memory allocating a GPU resource on the own-loop (wgpu) path, captured
+    /// by an `OutOfMemory` error scope at the creating call. Distinct from the internal-invariant
+    /// [`ResourceCreation`](Self::ResourceCreation) assertions. Carries no resource stage: an
+    /// out-of-memory is a machine-state condition, and the recovery contract does not branch on which
+    /// resource failed. **Native-only:** on wasm this is not captured and reaches wgpu's default
+    /// (panicking) handler. Covers `backdrop-blur`'s own creations only — allocations inside
+    /// `egui_wgpu` are outside this crate's reach. Recoverable: do not present the frame, re-request a
+    /// repaint, and retry unfrosted or shed surfaces.
+    #[error("the device ran out of memory allocating a blur resource")]
+    DeviceOutOfMemory {
+        /// The backend's underlying out-of-memory error.
         #[source]
         source: BackendError,
     },
@@ -68,6 +84,7 @@ pub enum BlurError {
 /// Which GPU resource a [`BlurError::ResourceCreation`] refers to — named so a failure points
 /// at one resource, not "something in prepare".
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum BlurStage {
     /// A ping-pong scratch texture in the blur chain.
     PingPongTexture,
@@ -142,6 +159,16 @@ mod tests {
         };
         let source = std::error::Error::source(&err).expect("a backend source is attached");
         assert_eq!(source.to_string(), "out of memory");
+    }
+
+    #[test]
+    fn device_out_of_memory_display_and_source_chain() {
+        let err = BlurError::DeviceOutOfMemory {
+            source: "device out of memory".into(),
+        };
+        assert!(err.to_string().contains("ran out of memory"));
+        let source = std::error::Error::source(&err).expect("a backend source is attached");
+        assert_eq!(source.to_string(), "device out of memory");
     }
 
     #[test]
