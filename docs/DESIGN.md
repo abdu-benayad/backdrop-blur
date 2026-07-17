@@ -428,8 +428,30 @@ that *does* expose a sampleable-backdrop hook drops in as an additive adapter cr
 - **Zero-sized / offscreen source region, or zero-area target rect** → `prepare` returns
   `Ok(())`-equivalent no-op (no allocation, no grab; the composite divides by the target size, so an
   empty target never reaches it); **never an error** (M7).
-- **Resource creation fails** → `Err(BlurError::ResourceCreation { stage, .. })`; the adapter logs and
-  the surface renders without frost that frame. Never panics.
+- **Resource-creation failure** → `Err(BlurError::ResourceCreation { stage, .. })`, `stage` naming the
+  failed resource (the grab-pass/glow path's shader/program/framebuffer/VAO failures) or an
+  internal-invariant assertion on the wgpu path (e.g. "scratch missing immediately after
+  `ensure_scratch`"); the adapter logs and the surface renders without frost that frame. **Distinct**
+  from the wgpu own-loop device-out-of-memory channel below.
+- **Device out of memory (own-loop / wgpu, native)** → `Err(BlurError::DeviceOutOfMemory { source })`,
+  captured per creating call by an `OutOfMemory` error scope and checked (`?`) **before the handle is
+  consumed**, so wgpu's contagious-invalidity cascade (an out-of-memory handle used downstream raises an
+  uncatchable `Validation` error) cannot panic. Covers **all** of `backdrop-blur`'s own creations — the
+  blur backend's textures/buffers/pipelines/bind groups, `WgpuBlur::new`'s fixed pipelines *and*
+  descriptor objects (bind-group/pipeline layouts, sampler, shader modules), and the own-loop adapter's
+  intermediate. On out-of-memory the whole frame is dropped unsubmitted (the `?` returns before
+  `queue.submit`); the host must not present it, should re-request a repaint, and may retry unfrosted or
+  shed surfaces.
+- **`egui_wgpu::Renderer` internal allocations** (font-atlas growth, vertex/index buffers) → third-party,
+  **not** scoped by this crate; an out-of-memory there reaches wgpu's default (panicking) handler. Named,
+  not hidden — the own-loop "no panic on out-of-memory" contract is precisely *`backdrop-blur`'s own
+  creations*, not `egui_wgpu`'s.
+- **Genuine validation / internal GPU faults (wgpu)** → **deliberately panic** (crate bugs — this crate
+  builds its own descriptors). Only their out-of-memory *cause* is caught, at the creating call, before
+  the invalid handle cascades.
+- **wasm (own-loop)** → out-of-memory is **not** captured (the scope's `pop()` is a deferred promise a
+  synchronous frame call cannot read); it reaches the default handler and panics. Native-only; web frosted
+  glass is the glow/WebGL2 grab-pass path.
 - **Unsupported target format** → `Err(UnsupportedTarget)` from the lazy per-format pipeline build (M3).
 - **Resize / DPI change** → the `PingPongKey { size, levels }` chain is rebuilt; stale keys age out
   (the composite pipeline is keyed *separately* by target format — §4.4; the scratch key carries no format).
