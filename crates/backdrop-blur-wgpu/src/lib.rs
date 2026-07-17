@@ -948,3 +948,20 @@ fn build_pipeline(
         })
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn poll_once_yields_a_ready_future() {
+        // The native error-scope case: `pop()` is already resolved, so one poll returns its value.
+        assert_eq!(poll_once(std::future::ready(7u32)), Some(7));
+    }
+
+    #[test]
+    fn poll_once_reports_pending_as_none() {
+        // The non-native (deferred) case `scoped_oom` panics on: a never-ready future polls to None.
+        assert_eq!(poll_once(std::future::pending::<u32>()), None);
+    }
+}
