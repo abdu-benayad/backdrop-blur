@@ -17,10 +17,15 @@
 //!
 //! # On error handling
 //!
-//! wgpu resource creation (textures, buffers, pipelines) does **not** return `Result` — OOM and
-//! validation faults surface through the device's error handler, not synchronously — so this
-//! backend cannot map them to [`BlurError::ResourceCreation`] without an async error-scope pass
-//! (a candidate refinement). The error it *does* return synchronously is
+//! wgpu resource creation (textures, buffers, pipelines, bind groups) does **not** return `Result`;
+//! a fault is reported out-of-band through the device's error handler. This backend wraps every
+//! creation it performs in a per-call [`OutOfMemory`](wgpu::ErrorFilter::OutOfMemory) error scope and
+//! maps a captured allocation failure to [`BlurError::DeviceOutOfMemory`]. On the **native** backend
+//! the fault is recorded synchronously during the create call, so the scope is read without blocking,
+//! and the result is checked (`?`) before the handle is consumed — so an out-of-memory handle never
+//! cascades into an uncatchable `Validation` error (**native-only**, see [`BlurError::DeviceOutOfMemory`]).
+//! Genuine validation/internal faults are crate bugs (this crate builds its own descriptors) and are
+//! deliberately left to wgpu's default panic handler. The other error returned synchronously is
 //! [`BlurError::UnsupportedTarget`], checked against an allowlist before any GPU call.
 //!
 //! [`prepare`]: BackdropBlur::prepare
@@ -30,7 +35,6 @@
 use std::collections::HashMap;
 
 use backdrop_blur_core::{BackdropBlur, BlurError, BlurRequest, BlurStage, ResolvedMask};
-use wgpu::util::DeviceExt as _;
 
 mod cache;
 mod uniforms;
@@ -145,64 +149,80 @@ pub struct WgpuBlur {
 impl WgpuBlur {
     /// Build the fixed pipeline machinery. The Gaussian pipeline (always writing the internal
     /// scratch format) is built now; composite pipelines are built lazily per target format.
-    pub fn new(device: &wgpu::Device) -> Self {
-        let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("backdrop-blur bind group layout"),
-            entries: &[
-                wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Texture {
-                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                        view_dimension: wgpu::TextureViewDimension::D2,
-                        multisampled: false,
+    ///
+    /// Every creation is wrapped in a per-call [`OutOfMemory`](wgpu::ErrorFilter::OutOfMemory) error
+    /// scope, so a device out-of-memory at construction returns [`BlurError::DeviceOutOfMemory`]
+    /// instead of panicking (**native-only** — see the module-level error-handling note). A genuine
+    /// validation fault (a malformed shader or layout descriptor) is a crate bug and still panics via
+    /// wgpu's default handler.
+    pub fn new(device: &wgpu::Device) -> Result<Self, BlurError> {
+        let bind_group_layout = scoped_oom(device, || {
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("backdrop-blur bind group layout"),
+                entries: &[
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Texture {
+                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            multisampled: false,
+                        },
+                        count: None,
                     },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 1,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 2,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Uniform,
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                        count: None,
                     },
-                    count: None,
-                },
-            ],
-        });
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 2,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Uniform,
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                ],
+            })
+        })?;
 
-        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("backdrop-blur pipeline layout"),
-            bind_group_layouts: &[Some(&bind_group_layout)],
-            immediate_size: 0,
-        });
+        let pipeline_layout = scoped_oom(device, || {
+            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("backdrop-blur pipeline layout"),
+                bind_group_layouts: &[Some(&bind_group_layout)],
+                immediate_size: 0,
+            })
+        })?;
 
-        let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
-            label: Some("backdrop-blur sampler"),
-            address_mode_u: wgpu::AddressMode::ClampToEdge,
-            address_mode_v: wgpu::AddressMode::ClampToEdge,
-            address_mode_w: wgpu::AddressMode::ClampToEdge,
-            mag_filter: wgpu::FilterMode::Linear,
-            min_filter: wgpu::FilterMode::Linear,
-            mipmap_filter: wgpu::MipmapFilterMode::Nearest,
-            ..Default::default()
-        });
+        let sampler = scoped_oom(device, || {
+            device.create_sampler(&wgpu::SamplerDescriptor {
+                label: Some("backdrop-blur sampler"),
+                address_mode_u: wgpu::AddressMode::ClampToEdge,
+                address_mode_v: wgpu::AddressMode::ClampToEdge,
+                address_mode_w: wgpu::AddressMode::ClampToEdge,
+                mag_filter: wgpu::FilterMode::Linear,
+                min_filter: wgpu::FilterMode::Linear,
+                mipmap_filter: wgpu::MipmapFilterMode::Nearest,
+                ..Default::default()
+            })
+        })?;
 
-        let gaussian_shader =
-            device.create_shader_module(wgpu::include_wgsl!("shaders/gaussian.wgsl"));
-        let downsample_shader =
-            device.create_shader_module(wgpu::include_wgsl!("shaders/downsample.wgsl"));
-        let upsample_shader =
-            device.create_shader_module(wgpu::include_wgsl!("shaders/upsample.wgsl"));
-        let composite_shader =
-            device.create_shader_module(wgpu::include_wgsl!("shaders/composite.wgsl"));
+        let gaussian_shader = scoped_oom(device, || {
+            device.create_shader_module(wgpu::include_wgsl!("shaders/gaussian.wgsl"))
+        })?;
+        let downsample_shader = scoped_oom(device, || {
+            device.create_shader_module(wgpu::include_wgsl!("shaders/downsample.wgsl"))
+        })?;
+        let upsample_shader = scoped_oom(device, || {
+            device.create_shader_module(wgpu::include_wgsl!("shaders/upsample.wgsl"))
+        })?;
+        let composite_shader = scoped_oom(device, || {
+            device.create_shader_module(wgpu::include_wgsl!("shaders/composite.wgsl"))
+        })?;
 
         // All blur passes write the internal scratch format with no blend; only the composite
         // matches the caller's format and blends.
@@ -212,23 +232,23 @@ impl WgpuBlur {
             &gaussian_shader,
             SCRATCH_FORMAT,
             None,
-        );
+        )?;
         let downsample_pipeline = build_pipeline(
             device,
             &pipeline_layout,
             &downsample_shader,
             SCRATCH_FORMAT,
             None,
-        );
+        )?;
         let upsample_pipeline = build_pipeline(
             device,
             &pipeline_layout,
             &upsample_shader,
             SCRATCH_FORMAT,
             None,
-        );
+        )?;
 
-        Self {
+        Ok(Self {
             pipeline_layout,
             bind_group_layout,
             sampler,
@@ -241,7 +261,7 @@ impl WgpuBlur {
             pyramids: HashMap::new(),
             frame: 0,
             generation: 0,
-        }
+        })
     }
 }
 
@@ -275,13 +295,13 @@ impl WgpuBlur {
 
     /// Create the two Gaussian ping-pong textures for `key` if not already cached, and mark the chain
     /// used this frame so eviction keeps it.
-    fn ensure_scratch(&mut self, device: &wgpu::Device, key: PingPongKey) {
+    fn ensure_scratch(&mut self, device: &wgpu::Device, key: PingPongKey) -> Result<(), BlurError> {
         if let Some(chain) = self.scratch.get_mut(&key) {
             chain.last_used_frame = self.frame;
-            return;
+            return Ok(());
         }
-        let view_a = scratch_view(device, key.size, "backdrop-blur scratch A");
-        let view_b = scratch_view(device, key.size, "backdrop-blur scratch B");
+        let view_a = scratch_view(device, key.size, "backdrop-blur scratch A")?;
+        let view_b = scratch_view(device, key.size, "backdrop-blur scratch B")?;
         self.scratch.insert(
             key,
             ScratchChain {
@@ -289,21 +309,22 @@ impl WgpuBlur {
                 last_used_frame: self.frame,
             },
         );
+        Ok(())
     }
 
     /// Create the dual-Kawase mip pyramid for `key` (`key.levels` = `N` → `N + 1` views, level 0
     /// at the full clipped size, level `i` halved) if not already cached.
-    fn ensure_pyramid(&mut self, device: &wgpu::Device, key: PingPongKey) {
+    fn ensure_pyramid(&mut self, device: &wgpu::Device, key: PingPongKey) -> Result<(), BlurError> {
         if let Some(chain) = self.pyramids.get_mut(&key) {
             chain.last_used_frame = self.frame;
-            return;
+            return Ok(());
         }
         let views = (0..=key.levels)
             .map(|level| {
                 let size = kawase_level_size(key.size, level);
                 scratch_view(device, size, "backdrop-blur kawase mip")
             })
-            .collect();
+            .collect::<Result<Vec<_>, _>>()?;
         self.pyramids.insert(
             key,
             PyramidChain {
@@ -311,12 +332,17 @@ impl WgpuBlur {
                 last_used_frame: self.frame,
             },
         );
+        Ok(())
     }
 
     /// Build and cache the composite pipeline for `format` if not already present.
-    fn ensure_composite_pipeline(&mut self, device: &wgpu::Device, format: wgpu::TextureFormat) {
+    fn ensure_composite_pipeline(
+        &mut self,
+        device: &wgpu::Device,
+        format: wgpu::TextureFormat,
+    ) -> Result<(), BlurError> {
         if self.composite_pipelines.contains_key(&format) {
-            return;
+            return Ok(());
         }
         let pipeline = build_pipeline(
             device,
@@ -324,8 +350,9 @@ impl WgpuBlur {
             &self.composite_shader,
             format,
             Some(over_blend()),
-        );
+        )?;
         self.composite_pipelines.insert(format, pipeline);
+        Ok(())
     }
 
     /// One bind group: a sampled texture view + the shared sampler + a uniform buffer.
@@ -335,24 +362,26 @@ impl WgpuBlur {
         view: &wgpu::TextureView,
         uniform: &wgpu::Buffer,
         label: &str,
-    ) -> wgpu::BindGroup {
-        device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some(label),
-            layout: &self.bind_group_layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::TextureView(view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::Sampler(&self.sampler),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: uniform.as_entire_binding(),
-                },
-            ],
+    ) -> Result<wgpu::BindGroup, BlurError> {
+        scoped_oom(device, || {
+            device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some(label),
+                layout: &self.bind_group_layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::TextureView(view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::Sampler(&self.sampler),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 2,
+                        resource: uniform.as_entire_binding(),
+                    },
+                ],
+            })
         })
     }
 }
@@ -413,7 +442,7 @@ impl BackdropBlur for WgpuBlur {
             TargetEncoding::Srgb
         );
         let decode_srgb = matches!(source.color_space, SourceColorSpace::GammaSrgb);
-        self.ensure_composite_pipeline(device, target_spec);
+        self.ensure_composite_pipeline(device, target_spec)?;
 
         let radius = request.physical_blur_radius();
         let [source_w, source_h] = [source.size[0] as f32, source.size[1] as f32];
@@ -447,7 +476,7 @@ impl BackdropBlur for WgpuBlur {
             encode_srgb,
             request.presence.value(),
         );
-        let composite_buf = uniform_buffer(device, &composite, "backdrop-blur composite");
+        let composite_buf = uniform_buffer(device, &composite, "backdrop-blur composite")?;
 
         let (blur, composite_bind) = if use_dual_kawase(radius) {
             let levels = resolve_kawase_levels(radius);
@@ -455,7 +484,7 @@ impl BackdropBlur for WgpuBlur {
                 size: clipped.size,
                 levels,
             };
-            self.ensure_pyramid(device, key);
+            self.ensure_pyramid(device, key)?;
             let n = levels as usize;
 
             // Prefilter: source (gamma, sub-rect) → mip 0 (linear), via the Gaussian pipeline at
@@ -470,20 +499,20 @@ impl BackdropBlur for WgpuBlur {
                 decode_srgb,
             );
             let prefilter_buf =
-                uniform_buffer(device, &prefilter, "backdrop-blur kawase-prefilter");
+                uniform_buffer(device, &prefilter, "backdrop-blur kawase-prefilter")?;
             // Per-pass half-pixel offsets: each pass samples a known mip level.
-            let down_bufs: Vec<wgpu::Buffer> = (0..n)
+            let down_bufs = (0..n)
                 .map(|i| {
                     let hp = kawase_halfpixel(kawase_level_size(clipped.size, i as u32));
                     uniform_buffer(device, &KawaseParams::new(hp), "backdrop-blur kawase-down")
                 })
-                .collect();
-            let up_bufs: Vec<wgpu::Buffer> = (0..n)
+                .collect::<Result<Vec<_>, _>>()?;
+            let up_bufs = (0..n)
                 .map(|j| {
                     let hp = kawase_halfpixel(kawase_level_size(clipped.size, (n - j) as u32));
                     uniform_buffer(device, &KawaseParams::new(hp), "backdrop-blur kawase-up")
                 })
-                .collect();
+                .collect::<Result<Vec<_>, _>>()?;
 
             let pyramid = self
                 .pyramids
@@ -498,23 +527,23 @@ impl BackdropBlur for WgpuBlur {
                 &source.view,
                 &prefilter_buf,
                 "backdrop-blur prefilter-bind",
-            );
+            )?;
             let down_binds = down_bufs
                 .iter()
                 .enumerate()
                 .map(|(i, buf)| self.bind(device, &pyramid[i], buf, "backdrop-blur down-bind"))
-                .collect();
+                .collect::<Result<Vec<_>, _>>()?;
             let up_binds = up_bufs
                 .iter()
                 .enumerate()
                 .map(|(j, buf)| self.bind(device, &pyramid[n - j], buf, "backdrop-blur up-bind"))
-                .collect();
+                .collect::<Result<Vec<_>, _>>()?;
             let composite_bind = self.bind(
                 device,
                 &pyramid[0],
                 &composite_buf,
                 "backdrop-blur composite-bind",
-            );
+            )?;
 
             (
                 PreparedBlur::DualKawase {
@@ -531,7 +560,7 @@ impl BackdropBlur for WgpuBlur {
                 size: clipped.size,
                 levels: 1,
             };
-            self.ensure_scratch(device, key);
+            self.ensure_scratch(device, key)?;
 
             // Pass 1 maps the scratch onto the source sub-rect and decodes; pass 2 samples the
             // full (linear) scratch A.
@@ -553,8 +582,8 @@ impl BackdropBlur for WgpuBlur {
                 kernel.tap_radius,
                 false,
             );
-            let horizontal_buf = uniform_buffer(device, &horizontal, "backdrop-blur gaussian-h");
-            let vertical_buf = uniform_buffer(device, &vertical, "backdrop-blur gaussian-v");
+            let horizontal_buf = uniform_buffer(device, &horizontal, "backdrop-blur gaussian-h")?;
+            let vertical_buf = uniform_buffer(device, &vertical, "backdrop-blur gaussian-v")?;
 
             let chain = self
                 .scratch
@@ -568,19 +597,19 @@ impl BackdropBlur for WgpuBlur {
                 &source.view,
                 &horizontal_buf,
                 "backdrop-blur h-bind",
-            );
+            )?;
             let vertical_bind = self.bind(
                 device,
                 &chain.views[0],
                 &vertical_buf,
                 "backdrop-blur v-bind",
-            );
+            )?;
             let composite_bind = self.bind(
                 device,
                 &chain.views[1],
                 &composite_buf,
                 "backdrop-blur composite-bind",
-            );
+            )?;
 
             (
                 PreparedBlur::Gaussian {
@@ -655,35 +684,102 @@ impl BackdropBlur for WgpuBlur {
     }
 }
 
-// --- Pass + buffer helpers ---
+// --- Error-scope + buffer helpers ---
 
-/// Create a UNIFORM buffer initialized with `value`'s bytes.
-fn uniform_buffer<T: bytemuck::Pod>(device: &wgpu::Device, value: &T, label: &str) -> wgpu::Buffer {
-    device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-        label: Some(label),
-        contents: bytemuck::bytes_of(value),
-        usage: wgpu::BufferUsages::UNIFORM,
-    })
+/// Poll a future exactly once and return its output if it is already ready. On the native wgpu
+/// backend an error scope's `pop()` future is always already-resolved (the fault was recorded
+/// synchronously during the create call), so a single poll suffices — no executor, no blocking. A
+/// `Pending` result means the non-native (deferred-promise) path, which this crate does not support.
+fn poll_once<F: std::future::Future>(fut: F) -> Option<F::Output> {
+    let mut fut = std::pin::pin!(fut);
+    let waker = std::task::Waker::noop();
+    let mut cx = std::task::Context::from_waker(waker);
+    match fut.as_mut().poll(&mut cx) {
+        std::task::Poll::Ready(v) => Some(v),
+        std::task::Poll::Pending => None,
+    }
+}
+
+/// Run `create` inside an [`OutOfMemory`](wgpu::ErrorFilter::OutOfMemory) error scope; map a captured
+/// allocation failure to [`BlurError::DeviceOutOfMemory`]. Only out-of-memory is scoped; validation
+/// and internal faults are crate bugs left to wgpu's default panic handler. Native-only (see
+/// [`poll_once`]). The result MUST be checked (`?`) before it is consumed by any later call — an
+/// out-of-memory handle consumed downstream raises an uncatchable `Validation` error (wgpu's
+/// contagious invalidity). Push, create, and pop run on one thread with nothing yielding between,
+/// because a [`wgpu::ErrorScopeGuard`] is thread-local (`!Send`).
+fn scoped_oom<T>(device: &wgpu::Device, create: impl FnOnce() -> T) -> Result<T, BlurError> {
+    let scope = device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
+    let resource = create();
+    match poll_once(scope.pop()) {
+        Some(None) => Ok(resource),
+        Some(Some(err)) => Err(BlurError::DeviceOutOfMemory {
+            source: Box::new(err),
+        }),
+        None => panic!(
+            "backdrop-blur: OOM error scope did not resolve synchronously; native-only path (design v5)"
+        ),
+    }
+}
+
+/// Create a UNIFORM buffer initialized with `value`'s bytes, inside an `OutOfMemory` error scope.
+///
+/// Deliberately does **not** use `create_buffer_init`: that helper maps-at-creation and calls
+/// `get_mapped_range_mut` on the returned buffer, which on an out-of-memory-invalidated buffer hits a
+/// fatal panic path that bypasses the error scope entirely (before the scope is ever read). Instead
+/// the mapped buffer is created inside the scope and checked (`?`), and only mapped/written on
+/// success — so the `?` short-circuits before the fatal map on out-of-memory. The padding matches
+/// `create_buffer_init` exactly (round up to `COPY_BUFFER_ALIGNMENT`, min one alignment).
+fn uniform_buffer<T: bytemuck::Pod>(
+    device: &wgpu::Device,
+    value: &T,
+    label: &str,
+) -> Result<wgpu::Buffer, BlurError> {
+    let contents = bytemuck::bytes_of(value);
+    let unpadded_size = contents.len() as wgpu::BufferAddress;
+    let align_mask = wgpu::COPY_BUFFER_ALIGNMENT - 1;
+    let padded_size = ((unpadded_size + align_mask) & !align_mask).max(wgpu::COPY_BUFFER_ALIGNMENT);
+    let buffer = scoped_oom(device, || {
+        device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some(label),
+            size: padded_size,
+            usage: wgpu::BufferUsages::UNIFORM,
+            mapped_at_creation: true,
+        })
+    })?;
+    buffer
+        .get_mapped_range_mut(..)
+        .slice(..unpadded_size as usize)
+        .copy_from_slice(contents);
+    buffer.unmap();
+    Ok(buffer)
 }
 
 /// A `[width, height]` `SCRATCH_FORMAT` texture usable as both a sampled source and a render
-/// target, returned as a view (the view keeps the texture alive by refcount).
-fn scratch_view(device: &wgpu::Device, size: [u32; 2], label: &str) -> wgpu::TextureView {
-    let texture = device.create_texture(&wgpu::TextureDescriptor {
-        label: Some(label),
-        size: wgpu::Extent3d {
-            width: size[0],
-            height: size[1],
-            depth_or_array_layers: 1,
-        },
-        mip_level_count: 1,
-        sample_count: 1,
-        dimension: wgpu::TextureDimension::D2,
-        format: SCRATCH_FORMAT,
-        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::RENDER_ATTACHMENT,
-        view_formats: &[],
-    });
-    texture.create_view(&wgpu::TextureViewDescriptor::default())
+/// target, returned as a view (the view keeps the texture alive by refcount). The texture creation
+/// is scoped for out-of-memory; the view creation is not a memory allocation and is left unscoped
+/// (a documented low-risk residual).
+fn scratch_view(
+    device: &wgpu::Device,
+    size: [u32; 2],
+    label: &str,
+) -> Result<wgpu::TextureView, BlurError> {
+    let texture = scoped_oom(device, || {
+        device.create_texture(&wgpu::TextureDescriptor {
+            label: Some(label),
+            size: wgpu::Extent3d {
+                width: size[0],
+                height: size[1],
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: SCRATCH_FORMAT,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::RENDER_ATTACHMENT,
+            view_formats: &[],
+        })
+    })?;
+    Ok(texture.create_view(&wgpu::TextureViewDescriptor::default()))
 }
 
 impl WgpuBlur {
@@ -812,40 +908,43 @@ fn over_blend() -> wgpu::BlendState {
 }
 
 /// Build a render pipeline from a shader module (a `vs_main`/`fs_main` pair) writing `format`,
-/// with optional blend. Used for both the Gaussian and the composite pipelines.
+/// with optional blend. Used for both the Gaussian and the composite pipelines. Scoped for
+/// out-of-memory; a genuine validation fault (bad shader/layout) is a crate bug left to panic.
 fn build_pipeline(
     device: &wgpu::Device,
     layout: &wgpu::PipelineLayout,
     shader: &wgpu::ShaderModule,
     format: wgpu::TextureFormat,
     blend: Option<wgpu::BlendState>,
-) -> wgpu::RenderPipeline {
-    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-        label: Some("backdrop-blur pipeline"),
-        layout: Some(layout),
-        vertex: wgpu::VertexState {
-            module: shader,
-            entry_point: Some("vs_main"),
-            buffers: &[],
-            compilation_options: wgpu::PipelineCompilationOptions::default(),
-        },
-        fragment: Some(wgpu::FragmentState {
-            module: shader,
-            entry_point: Some("fs_main"),
-            targets: &[Some(wgpu::ColorTargetState {
-                format,
-                blend,
-                write_mask: wgpu::ColorWrites::ALL,
-            })],
-            compilation_options: wgpu::PipelineCompilationOptions::default(),
-        }),
-        primitive: wgpu::PrimitiveState {
-            topology: wgpu::PrimitiveTopology::TriangleList,
-            ..Default::default()
-        },
-        depth_stencil: None,
-        multisample: wgpu::MultisampleState::default(),
-        multiview_mask: None,
-        cache: None,
+) -> Result<wgpu::RenderPipeline, BlurError> {
+    scoped_oom(device, || {
+        device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("backdrop-blur pipeline"),
+            layout: Some(layout),
+            vertex: wgpu::VertexState {
+                module: shader,
+                entry_point: Some("vs_main"),
+                buffers: &[],
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: shader,
+                entry_point: Some("fs_main"),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format,
+                    blend,
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                ..Default::default()
+            },
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
+            multiview_mask: None,
+            cache: None,
+        })
     })
 }

@@ -150,7 +150,7 @@ fn own_loop_frosts_a_panel_over_a_real_egui_frame() {
 
     let mut adapter =
         OwnLoopRenderer::new(&device, FORMAT).expect("Rgba8Unorm is a supported target");
-    let mut blur = WgpuBlur::new(&device);
+    let mut blur = WgpuBlur::new(&device).expect("create WgpuBlur");
 
     // A 100×100 panel centred on the red/blue edge.
     let surface = Surface {

@@ -177,7 +177,7 @@ fn frost_and_read(
         view_formats: &[],
     });
     let target_view = target.create_view(&wgpu::TextureViewDescriptor::default());
-    let mut blur = WgpuBlur::new(device);
+    let mut blur = WgpuBlur::new(device).expect("create WgpuBlur");
     let panel = region([50, 50], [100, 100]);
     let request = BlurRequest {
         source_region: panel,
@@ -320,7 +320,7 @@ fn frosted_panel_blurs_the_backdrop_inside_the_masked_rect() {
         view_formats: &[],
     });
 
-    let mut blur = WgpuBlur::new(&device);
+    let mut blur = WgpuBlur::new(&device).expect("create WgpuBlur");
 
     // Panel over the centre 100×100; its backdrop is the same screen area, spanning the edge.
     let panel = region([50, 50], [100, 100]);
@@ -646,7 +646,7 @@ fn scratch_cache_evicts_old_sizes_instead_of_leaking() {
         size: [DIM, DIM],
         color_space: SourceColorSpace::GammaSrgb,
     };
-    let mut blur = WgpuBlur::new(&device);
+    let mut blur = WgpuBlur::new(&device).expect("create WgpuBlur");
 
     // 40 frames, each a DISTINCT panel size → 40 distinct PingPongKeys if nothing ever evicts.
     let frames = 40u32;
@@ -694,7 +694,7 @@ fn prepare_is_a_no_op_for_a_zero_area_target_rect() {
         size: [DIM, DIM],
         color_space: SourceColorSpace::GammaSrgb,
     };
-    let mut blur = WgpuBlur::new(&device);
+    let mut blur = WgpuBlur::new(&device).expect("create WgpuBlur");
 
     let request = BlurRequest {
         source_region: region([50, 50], [100, 100]), // normal, fully in-bounds source

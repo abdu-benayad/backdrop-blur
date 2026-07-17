@@ -129,7 +129,7 @@ fn render(device: &wgpu::Device, queue: &wgpu::Queue, surfaces: &[Surface]) -> V
 
     let mut adapter =
         OwnLoopRenderer::new(device, FORMAT).expect("Rgba8Unorm is a supported target");
-    let mut blur = WgpuBlur::new(device);
+    let mut blur = WgpuBlur::new(device).expect("create WgpuBlur");
     adapter
         .render_frame(
             device,

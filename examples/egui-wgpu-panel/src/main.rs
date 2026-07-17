@@ -128,7 +128,7 @@ impl ApplicationHandler for App {
             None,
         );
         let own_loop = OwnLoopRenderer::new(&device, format).expect("choose_format returns a supported target");
-        let blur = WgpuBlur::new(&device);
+        let blur = WgpuBlur::new(&device).expect("create WgpuBlur");
 
         self.gpu = Some(Gpu {
             window,
