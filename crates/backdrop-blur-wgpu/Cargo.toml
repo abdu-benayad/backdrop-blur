@@ -1,6 +1,6 @@
 [package]
 name = "backdrop-blur-wgpu"
-version = "0.2.0"
+version = "0.3.0"
 description = "wgpu backend for backdrop-blur: a safe, WGSL implementation of the frosted-glass seam (separable Gaussian now; dual-Kawase to follow)."
 readme = "README.md"
 edition.workspace = true
