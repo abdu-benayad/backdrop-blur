@@ -726,6 +726,21 @@ enum OomOutcome {
     DeviceLost,
 }
 
+/// Fold an error and its `source()` chain into one `": "`-joined string. `wgpu::Error`'s `Display`
+/// is a bare constant (`"Out of Memory"`); the resource that faulted lives one level down, in
+/// wgpu-core's `ContextError` source (the API call + descriptor label). A plain `String` boxed as
+/// the backend-error source is chain-terminal, so the chain is flattened into the message here —
+/// keeping that diagnostic while staying `Send + Sync` on wasm, where the live `wgpu::Error` is not.
+fn describe(err: &(dyn std::error::Error + 'static)) -> String {
+    let mut parts = vec![err.to_string()];
+    let mut cause = err.source();
+    while let Some(c) = cause {
+        parts.push(c.to_string());
+        cause = c.source();
+    }
+    parts.join(": ")
+}
+
 /// Run `create` inside an [`OutOfMemory`](wgpu::ErrorFilter::OutOfMemory) error scope; route a
 /// captured allocation failure per `outcome` — [`BlurError::DeviceOutOfMemory`] where the device
 /// survives the rejection, [`BlurError::DeviceLost`] where wgpu-core has already marked the device
@@ -747,10 +762,10 @@ fn scoped_oom<T>(
         Some(None) => Ok(resource),
         Some(Some(err)) => Err(match outcome {
             OomOutcome::Recoverable => BlurError::DeviceOutOfMemory {
-                source: Box::new(err),
+                source: describe(&err).into(),
             },
             OomOutcome::DeviceLost => BlurError::DeviceLost {
-                source: Box::new(err),
+                source: describe(&err).into(),
             },
         }),
         None => panic!(
