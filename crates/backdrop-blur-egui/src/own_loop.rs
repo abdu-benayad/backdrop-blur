@@ -165,7 +165,9 @@ impl OwnLoopRenderer {
             Some(existing) => existing,
             None => {
                 let format = self.target_format;
-                let texture = scoped_oom(device, || {
+                // wgpu-core 29.0.3: create_texture primary alloc non-fatal; MIXED (internal
+                // clear-view fatal) tagged Recoverable per decision (d).
+                let texture = scoped_oom(device, OomOutcome::Recoverable, || {
                     device.create_texture(&wgpu::TextureDescriptor {
                         label: Some("backdrop-blur egui intermediate"),
                         size: wgpu::Extent3d {
@@ -193,12 +195,16 @@ impl OwnLoopRenderer {
     /// for `Bounded`) so a stale backdrop cannot be silently forgotten (§4.6 — the adapter, not
     /// the host, drives the repaint). `frame` carries the tessellated egui output + the target.
     ///
-    /// **Out-of-memory contract (native).** `backdrop-blur`'s own resource creation — the
-    /// intermediate texture here, plus the blur backend's textures, buffers, pipelines, and bind
-    /// groups — returns [`BlurError::DeviceOutOfMemory`] on a device out-of-memory instead of
-    /// panicking. On that `Err` nothing has been submitted (the `?` returns before `queue.submit`),
-    /// so this frame produced nothing: do not present it, re-request a repaint, and retry unfrosted
-    /// or shed surfaces. This is **not** a blanket "never panics" — allocations *inside*
+    /// **Out-of-memory contract (native).** `backdrop-blur`'s own resource creation returns an
+    /// error on a device out-of-memory instead of panicking, split by whether the device survives.
+    /// The intermediate texture here, plus the blur backend's scratch **textures** and uniform
+    /// **buffers**, return [`BlurError::DeviceOutOfMemory`] — recoverable in the common case: on
+    /// that `Err` nothing has been submitted (the `?` returns before `queue.submit`), so do not
+    /// present the frame, re-request a repaint, and retry unfrosted or shed surfaces (see that
+    /// variant's mixed-site caveat for the narrow window where the device was lost anyway). The
+    /// backend's **pipelines and bind groups** — including the per-frame bind groups — return
+    /// [`BlurError::DeviceLost`]: wgpu has already invalidated the device, so tear it down and do
+    /// **not** retry on it. This is **not** a blanket "never panics" — allocations *inside*
     /// `egui_wgpu::Renderer` (font-atlas growth in `update_texture`, vertex/index buffer growth in
     /// `update_buffers`/`render`) are third-party and cannot be scoped by this crate; an
     /// out-of-memory there still reaches wgpu's default (panicking) handler.
@@ -327,19 +333,51 @@ fn poll_once<F: std::future::Future>(fut: F) -> Option<F::Output> {
     }
 }
 
-/// Run `create` inside an [`OutOfMemory`](wgpu::ErrorFilter::OutOfMemory) error scope and map a
-/// captured allocation failure to [`BlurError::DeviceOutOfMemory`]. A deliberate local mirror of the
-/// wgpu backend's private `scoped_oom`, duplicated rather than exposing that helper as public API.
-/// Native-only: the scope is read synchronously (see [`poll_once`]); the result MUST be checked
-/// (`?`) before the handle is consumed — an out-of-memory handle consumed downstream raises an
-/// uncatchable `Validation` error (wgpu's contagious invalidity).
-fn scoped_oom<T>(device: &wgpu::Device, create: impl FnOnce() -> T) -> Result<T, BlurError> {
+/// Whether a rejected allocation at a `scoped_oom` site leaves the device alive — a deliberate
+/// local mirror of the wgpu backend's private `OomOutcome`, so this copy's call sites must also
+/// state their arm explicitly instead of silently defaulting to the recoverable variant. The
+/// mapping is a static claim about wgpu-core 29.0.3, guarded by the `wgpu_core_version_pin`
+/// tripwire test in the wgpu backend.
+enum OomOutcome {
+    /// The allocation's handler skips `lose()` on out-of-memory: report
+    /// [`BlurError::DeviceOutOfMemory`], the device survives, the host may retry.
+    Recoverable,
+    /// The allocation's handler calls `lose()` before returning: report [`BlurError::DeviceLost`],
+    /// the device is already gone at return, the host must tear down.
+    #[expect(
+        dead_code,
+        reason = "classification parity with the wgpu backend copy; only the non-fatal (Recoverable) \
+                  arm is exercised in the own-loop adapter today — a future fatal own-loop creation \
+                  would construct this and retire the expect"
+    )]
+    DeviceLost,
+}
+
+/// Run `create` inside an [`OutOfMemory`](wgpu::ErrorFilter::OutOfMemory) error scope and route a
+/// captured allocation failure per `outcome` — [`BlurError::DeviceOutOfMemory`] where the device
+/// survives the rejection, [`BlurError::DeviceLost`] where wgpu-core has already marked the device
+/// invalid inside the create call (on that arm the device is gone at return; that is the capture
+/// instant, not a re-checked liveness status). A deliberate local mirror of the wgpu backend's
+/// private `scoped_oom`, duplicated rather than exposing that helper as public API. Native-only:
+/// the scope is read synchronously (see [`poll_once`]); the result MUST be checked (`?`) before the
+/// handle is consumed — an out-of-memory handle consumed downstream raises an uncatchable
+/// `Validation` error (wgpu's contagious invalidity).
+fn scoped_oom<T>(
+    device: &wgpu::Device,
+    outcome: OomOutcome,
+    create: impl FnOnce() -> T,
+) -> Result<T, BlurError> {
     let scope = device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
     let resource = create();
     match poll_once(scope.pop()) {
         Some(None) => Ok(resource),
-        Some(Some(err)) => Err(BlurError::DeviceOutOfMemory {
-            source: Box::new(err),
+        Some(Some(err)) => Err(match outcome {
+            OomOutcome::Recoverable => BlurError::DeviceOutOfMemory {
+                source: Box::new(err),
+            },
+            OomOutcome::DeviceLost => BlurError::DeviceLost {
+                source: Box::new(err),
+            },
         }),
         None => panic!(
             "backdrop-blur: OOM error scope did not resolve synchronously; native-only path (design v5)"
