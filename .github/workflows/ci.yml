@@ -8,7 +8,8 @@ name: CI
 #                      readback/snapshot tests and the egui own-loop render test.
 #   - gated GL tier  — EGL-surfaceless software GL (`gl-snapshots`): the glow backend's
 #                      Tier-1 readback tests AND the egui adapter's GL control-flow tests.
-#   - wasm build     — the glow backend compiled for wasm32 (WebGL2 readiness, build only).
+#   - wasm build     — the library crates compiled for wasm32 (build only): glow for WebGL2
+#                      readiness, plus the wgpu / own-loop -egui path (E1 error-boxing portability).
 #   - excluded examples — built (not run) in their own job; they never enter the portable
 #                      `--workspace --all-targets` loop, which is why that loop stays
 #                      winit-free and portable.
@@ -160,9 +161,11 @@ jobs:
         run: cargo test -p backdrop-blur-egui --no-default-features --features gl-snapshots -- --test-threads=1
 
   wasm:
-    # The glow backend must stay buildable for WebGL2 (wasm32), the design's web-first target.
-    # Compile-only here; the headless-Chromium WebGL2 readback tier is a separate (deferred) job.
-    name: wasm32 build (WebGL2 readiness)
+    # The library crates must stay buildable for wasm32 (compile-only). glow is the design's
+    # web-first WebGL2 target; the wgpu backend + own-loop -egui adapter are guarded here so E1's
+    # error-boxing portability (BackendError's Send+Sync bound vs wgpu::Error on wasm) can't regress
+    # uncaught. The headless-Chromium WebGL2 readback tier is a separate (deferred) job.
+    name: wasm32 build (library compile portability)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -172,6 +175,10 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: build the glow backend for wasm32 (the WebGL2 target)
         run: cargo build -p backdrop-blur-glow --target wasm32-unknown-unknown
+      - name: build the wgpu backend for wasm32 (own-loop compile-portability)
+        run: cargo build -p backdrop-blur-wgpu --target wasm32-unknown-unknown
+      - name: build the egui own-loop adapter for wasm32
+        run: cargo build -p backdrop-blur-egui --target wasm32-unknown-unknown
 
   examples:
     name: excluded examples (build only)
