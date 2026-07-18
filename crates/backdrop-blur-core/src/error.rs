@@ -35,11 +35,44 @@ pub enum BlurError {
     /// out-of-memory is a machine-state condition, and the recovery contract does not branch on which
     /// resource failed. **Native-only:** on wasm this is not captured and reaches wgpu's default
     /// (panicking) handler. Covers `backdrop-blur`'s own creations only — allocations inside
-    /// `egui_wgpu` are outside this crate's reach. Recoverable: do not present the frame, re-request a
-    /// repaint, and retry unfrosted or shed surfaces.
+    /// `egui_wgpu` are outside this crate's reach. The creations wgpu treats as device-fatal on
+    /// out-of-memory (layouts, shader modules, pipelines, bind groups) report
+    /// [`DeviceLost`](Self::DeviceLost) instead.
+    ///
+    /// Recoverable **in the common case** (a primary allocation failed; the device survives): do not
+    /// present the frame, re-request a repaint, and retry unfrosted or shed surfaces. A few creations
+    /// (mapped uniform buffers, render-attachment textures) make an *internal secondary* allocation
+    /// wgpu-core treats as device-fatal; if that specific sub-allocation is the one that runs out of
+    /// memory, the device is lost but the fault is still reported here — the two outcomes are not
+    /// distinguishable at the error-scope layer. The backstop for that narrow window is the host's
+    /// own device-lost callback (see [`DeviceLost`](Self::DeviceLost)), which `wgpu` fires on the
+    /// loss regardless of which variant this crate returns.
     #[error("the device ran out of memory allocating a blur resource")]
     DeviceOutOfMemory {
         /// The backend's underlying out-of-memory error.
+        #[source]
+        source: BackendError,
+    },
+
+    /// The device was **lost** — wgpu marked it permanently invalid — because an allocation this
+    /// crate made was rejected for memory on one of the arms wgpu-core treats as device-fatal
+    /// (bind-group/pipeline layouts, shader modules, render pipelines, bind groups). Captured at the
+    /// **instant of the losing allocation**: this is not a re-checked liveness status, and it is
+    /// reported exactly once — treat it as *stop using this device now*. Driving the render path
+    /// again on the dead device is not re-reported as `DeviceLost`; the follow-on rejection slips
+    /// past the out-of-memory scope and faults uncatchably downstream (DESIGN §9).
+    ///
+    /// Reports only this crate's **own** OOM-induced loss. The host must keep its own
+    /// `wgpu::Device` device-lost handling for every other cause (driver reset, TDR, losses inside
+    /// `egui_wgpu`) — that handling is also the backstop for the narrow mixed-site window documented
+    /// on [`DeviceOutOfMemory`](Self::DeviceOutOfMemory).
+    ///
+    /// **Migration (0.3.0):** new variant. `BlurError` is `#[non_exhaustive]`, so an existing `_`
+    /// match arm still compiles — but a `_ => retry`-style arm silently absorbs this and retries on
+    /// a dead device. Add an explicit `DeviceLost` arm that tears the device down.
+    #[error("the device was lost following a rejected blur allocation (out of memory)")]
+    DeviceLost {
+        /// The backend's underlying out-of-memory error (the cause the device was lost to).
         #[source]
         source: BackendError,
     },
@@ -167,6 +200,17 @@ mod tests {
             source: "device out of memory".into(),
         };
         assert!(err.to_string().contains("ran out of memory"));
+        let source = std::error::Error::source(&err).expect("a backend source is attached");
+        assert_eq!(source.to_string(), "device out of memory");
+    }
+
+    #[test]
+    fn device_lost_display_and_source_chain() {
+        let err = BlurError::DeviceLost {
+            source: "device out of memory".into(),
+        };
+        assert!(err.to_string().contains("device was lost"));
+        assert!(err.to_string().contains("out of memory"));
         let source = std::error::Error::source(&err).expect("a backend source is attached");
         assert_eq!(source.to_string(), "device out of memory");
     }
