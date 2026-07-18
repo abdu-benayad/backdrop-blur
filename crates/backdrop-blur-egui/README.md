@@ -74,8 +74,12 @@ Independent knobs — conflating them is the most common "my glass looks wrong":
 
 ## Status
 
-Pre-release (`0.2.x`). The API is **not yet stable** — expect breaking changes before `1.0`, and pin
+Pre-release (`0.3.x`). The API is **not yet stable** — expect breaking changes before `1.0`, and pin
 an exact version.
+
+**0.3.0 adds `BlurError::DeviceLost`** (own-loop path). `BlurError` is `#[non_exhaustive]`, so a `_`
+match arm still compiles — but if you match `BlurError`, add a `DeviceLost` arm that **tears the
+device down** rather than retrying, or a `_ => retry` arm will retry on a dead device.
 
 A full runnable example lives at
 [`examples/eframe-glow-panel`](https://github.com/abdu-benayad/backdrop-blur/tree/main/examples/eframe-glow-panel).

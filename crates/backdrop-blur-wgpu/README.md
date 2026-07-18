@@ -25,7 +25,11 @@ rather than this crate directly. Reach for `backdrop-blur-wgpu` when you drive w
 
 ## Status
 
-Pre-release (`0.2.x`). The API is **not yet stable** — pin an exact version.
+Pre-release (`0.3.x`). The API is **not yet stable** — pin an exact version.
+
+**0.3.0 adds `BlurError::DeviceLost`** (own-loop path). `BlurError` is `#[non_exhaustive]`, so a `_`
+match arm still compiles — but if you match `BlurError`, add a `DeviceLost` arm that **tears the
+device down** rather than retrying, or a `_ => retry` arm will retry on a dead device.
 
 See [`docs/IMPL.md`](https://github.com/abdu-benayad/backdrop-blur/blob/main/docs/IMPL.md) for the
 build sequence and [`docs/DESIGN.md`](https://github.com/abdu-benayad/backdrop-blur/blob/main/docs/DESIGN.md)

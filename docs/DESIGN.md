@@ -433,15 +433,31 @@ that *does* expose a sampleable-backdrop hook drops in as an additive adapter cr
   internal-invariant assertion on the wgpu path (e.g. "scratch missing immediately after
   `ensure_scratch`"); the adapter logs and the surface renders without frost that frame. **Distinct**
   from the wgpu own-loop device-out-of-memory channel below.
-- **Device out of memory (own-loop / wgpu, native)** → `Err(BlurError::DeviceOutOfMemory { source })`,
-  captured per creating call by an `OutOfMemory` error scope and checked (`?`) **before the handle is
-  consumed**, so wgpu's contagious-invalidity cascade (an out-of-memory handle used downstream raises an
-  uncatchable `Validation` error) cannot panic. Covers **all** of `backdrop-blur`'s own creations — the
-  blur backend's textures/buffers/pipelines/bind groups, `WgpuBlur::new`'s fixed pipelines *and*
-  descriptor objects (bind-group/pipeline layouts, sampler, shader modules), and the own-loop adapter's
-  intermediate. On out-of-memory the whole frame is dropped unsubmitted (the `?` returns before
+- **Device out of memory, non-fatal arms (own-loop / wgpu, native)** →
+  `Err(BlurError::DeviceOutOfMemory { source })`, captured per creating call by an `OutOfMemory` error
+  scope and checked (`?`) **before the handle is consumed**, so wgpu's contagious-invalidity cascade (an
+  out-of-memory handle used downstream raises an uncatchable `Validation` error) cannot panic — a
+  guarantee that holds for a call entering with a *live* device; a host that ignores `DeviceLost` below
+  and drives the dead device again forfeits it. The non-fatal arms are the sampler and the **primary**
+  allocations of the blur backend's buffers/textures and the own-loop adapter's intermediate: the device
+  survives the rejection. The whole frame is dropped unsubmitted (the `?` returns before
   `queue.submit`); the host must not present it, should re-request a repaint, and may retry unfrosted or
   shed surfaces.
+- **Device out of memory, fatal arms** → `Err(BlurError::DeviceLost { source })`: wgpu-core
+  `device.lose()`s the device at the rejected allocation — bind-group/pipeline layouts, shader modules,
+  render pipelines (`WgpuBlur::new`'s fixed set and the lazy per-format composite), and the per-frame
+  bind group — so the device is **already permanently invalid** when the error is returned, this frame
+  and every future one. The correct response is teardown/recreate, not a same-device retry. `DeviceLost`
+  is captured at the loss instant, not re-checked: a second drive of the render path is rejected with a
+  device-lost-classified error the out-of-memory scope does not match, slips through as a false success,
+  and faults uncatchably downstream — the teardown instruction is load-bearing, not advisory.
+- **The mixed sites** — mapped uniform buffers and render-attachment textures — make an *internal
+  secondary* allocation (staging buffer / clear-view) that wgpu-core treats as device-fatal. In the
+  narrow window where the primary allocation succeeds but that sub-allocation is the one rejected, the
+  fault is still reported as `DeviceOutOfMemory` yet the device is lost; the two outcomes are
+  indistinguishable at the error-scope layer. The backstop is the host's own `wgpu::Device` device-lost
+  callback (an obligation the host must keep — see §10), which wgpu fires on the loss regardless of
+  which variant this crate returns.
 - **`egui_wgpu::Renderer` internal allocations** (font-atlas growth, vertex/index buffers) → third-party,
   **not** scoped by this crate; an out-of-memory there reaches wgpu's default (panicking) handler. Named,
   not hidden — the own-loop "no panic on out-of-memory" contract is precisely *`backdrop-blur`'s own
@@ -476,6 +492,9 @@ that *does* expose a sampleable-backdrop hook drops in as an additive adapter cr
 - *A consumer compiles exactly the backends and toolkits it names — a wgpu user never builds glow's
   `unsafe`; a future non-egui adapter never forces egui's tree on others.*
 - *The crate owns only a surface's background; content, foreground, and a11y stay the host's.*
+- *The host keeps its own `wgpu::Device` device-lost handling (the callback slot is host-owned; the
+  crate never installs one). It is the only signal for losses this crate cannot observe — driver
+  reset, TDR, `egui_wgpu` faults — and the backstop for the mixed-site out-of-memory window (§9).*
 - *Adding a backend or toolkit is a new crate against the stable seam — validated by the IMPL-doc glow
   sketch before core is frozen, not merely asserted.*
 
