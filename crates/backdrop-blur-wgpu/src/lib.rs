@@ -20,10 +20,14 @@
 //! wgpu resource creation (textures, buffers, pipelines, bind groups) does **not** return `Result`;
 //! a fault is reported out-of-band through the device's error handler. This backend wraps every
 //! creation it performs in a per-call [`OutOfMemory`](wgpu::ErrorFilter::OutOfMemory) error scope and
-//! maps a captured allocation failure to [`BlurError::DeviceOutOfMemory`]. On the **native** backend
-//! the fault is recorded synchronously during the create call, so the scope is read without blocking,
-//! and the result is checked (`?`) before the handle is consumed — so an out-of-memory handle never
-//! cascades into an uncatchable `Validation` error (**native-only**, see [`BlurError::DeviceOutOfMemory`]).
+//! maps a captured allocation failure to [`BlurError::DeviceOutOfMemory`] (non-fatal kinds: the
+//! sampler, and the primary allocations of buffers/textures) or [`BlurError::DeviceLost`] (fatal
+//! kinds: layouts, shader modules, pipelines, bind groups — wgpu-core `device.lose()`s on their
+//! rejected allocation, so the device is already gone when the error is returned). On the **native**
+//! backend the fault is recorded synchronously during the create call, so the scope is read without
+//! blocking, and the result is checked (`?`) before the handle is consumed — so an out-of-memory
+//! handle never cascades into an uncatchable `Validation` error (**native-only**, see
+//! [`BlurError::DeviceOutOfMemory`]).
 //! Genuine validation/internal faults are crate bugs (this crate builds its own descriptors) and are
 //! deliberately left to wgpu's default panic handler. The other error returned synchronously is
 //! [`BlurError::UnsupportedTarget`], checked against an allowlist before any GPU call.
@@ -151,12 +155,15 @@ impl WgpuBlur {
     /// scratch format) is built now; composite pipelines are built lazily per target format.
     ///
     /// Every creation is wrapped in a per-call [`OutOfMemory`](wgpu::ErrorFilter::OutOfMemory) error
-    /// scope, so a device out-of-memory at construction returns [`BlurError::DeviceOutOfMemory`]
-    /// instead of panicking (**native-only** — see the module-level error-handling note). A genuine
+    /// scope, so a device out-of-memory at construction returns an error instead of panicking
+    /// (**native-only** — see the module-level error-handling note): [`BlurError::DeviceLost`] for
+    /// the layout/shader/pipeline creations (fatal arms — wgpu has already invalidated the device),
+    /// or [`BlurError::DeviceOutOfMemory`] for the sampler (the device survives). A genuine
     /// validation fault (a malformed shader or layout descriptor) is a crate bug and still panics via
     /// wgpu's default handler.
     pub fn new(device: &wgpu::Device) -> Result<Self, BlurError> {
-        let bind_group_layout = scoped_oom(device, || {
+        // wgpu-core 29.0.3: create_bind_group_layout routes solely through fatal handle_hal_error -> device.lose()
+        let bind_group_layout = scoped_oom(device, OomOutcome::DeviceLost, || {
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                 label: Some("backdrop-blur bind group layout"),
                 entries: &[
@@ -190,7 +197,8 @@ impl WgpuBlur {
             })
         })?;
 
-        let pipeline_layout = scoped_oom(device, || {
+        // wgpu-core 29.0.3: create_pipeline_layout routes solely through fatal handle_hal_error -> device.lose()
+        let pipeline_layout = scoped_oom(device, OomOutcome::DeviceLost, || {
             device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("backdrop-blur pipeline layout"),
                 bind_group_layouts: &[Some(&bind_group_layout)],
@@ -198,7 +206,8 @@ impl WgpuBlur {
             })
         })?;
 
-        let sampler = scoped_oom(device, || {
+        // wgpu-core 29.0.3: create_sampler non-fatal handler (resource.rs:2244)
+        let sampler = scoped_oom(device, OomOutcome::Recoverable, || {
             device.create_sampler(&wgpu::SamplerDescriptor {
                 label: Some("backdrop-blur sampler"),
                 address_mode_u: wgpu::AddressMode::ClampToEdge,
@@ -211,16 +220,17 @@ impl WgpuBlur {
             })
         })?;
 
-        let gaussian_shader = scoped_oom(device, || {
+        // wgpu-core 29.0.3: create_shader_module routes solely through fatal handle_hal_error -> device.lose()
+        let gaussian_shader = scoped_oom(device, OomOutcome::DeviceLost, || {
             device.create_shader_module(wgpu::include_wgsl!("shaders/gaussian.wgsl"))
         })?;
-        let downsample_shader = scoped_oom(device, || {
+        let downsample_shader = scoped_oom(device, OomOutcome::DeviceLost, || {
             device.create_shader_module(wgpu::include_wgsl!("shaders/downsample.wgsl"))
         })?;
-        let upsample_shader = scoped_oom(device, || {
+        let upsample_shader = scoped_oom(device, OomOutcome::DeviceLost, || {
             device.create_shader_module(wgpu::include_wgsl!("shaders/upsample.wgsl"))
         })?;
-        let composite_shader = scoped_oom(device, || {
+        let composite_shader = scoped_oom(device, OomOutcome::DeviceLost, || {
             device.create_shader_module(wgpu::include_wgsl!("shaders/composite.wgsl"))
         })?;
 
@@ -363,7 +373,8 @@ impl WgpuBlur {
         uniform: &wgpu::Buffer,
         label: &str,
     ) -> Result<wgpu::BindGroup, BlurError> {
-        scoped_oom(device, || {
+        // wgpu-core 29.0.3: create_bind_group routes solely through fatal handle_hal_error -> device.lose()
+        scoped_oom(device, OomOutcome::DeviceLost, || {
             device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some(label),
                 layout: &self.bind_group_layout,
@@ -700,20 +711,47 @@ fn poll_once<F: std::future::Future>(fut: F) -> Option<F::Output> {
     }
 }
 
-/// Run `create` inside an [`OutOfMemory`](wgpu::ErrorFilter::OutOfMemory) error scope; map a captured
-/// allocation failure to [`BlurError::DeviceOutOfMemory`]. Only out-of-memory is scoped; validation
-/// and internal faults are crate bugs left to wgpu's default panic handler. Native-only (see
-/// [`poll_once`]). The result MUST be checked (`?`) before it is consumed by any later call — an
-/// out-of-memory handle consumed downstream raises an uncatchable `Validation` error (wgpu's
-/// contagious invalidity). Push, create, and pop run on one thread with nothing yielding between,
-/// because a [`wgpu::ErrorScopeGuard`] is thread-local (`!Send`).
-fn scoped_oom<T>(device: &wgpu::Device, create: impl FnOnce() -> T) -> Result<T, BlurError> {
+/// Whether a rejected allocation at a `scoped_oom` site leaves the device alive. wgpu-core routes
+/// each creation's fault through one of two handlers: non-fatal (the allocation fails, the device
+/// survives) or fatal (`device.lose()` before the error is returned — the device is permanently
+/// invalid). Which handler fires is a wgpu-core internal invisible in the returned error, so every
+/// call site must state its arm explicitly; the mapping is a static claim about wgpu-core 29.0.3,
+/// guarded by the `wgpu_core_version_pin` tripwire test.
+enum OomOutcome {
+    /// The allocation's handler skips `lose()` on out-of-memory: report
+    /// [`BlurError::DeviceOutOfMemory`], the device survives, the host may retry.
+    Recoverable,
+    /// The allocation's handler calls `lose()` before returning: report [`BlurError::DeviceLost`],
+    /// the device is already gone at return, the host must tear down.
+    DeviceLost,
+}
+
+/// Run `create` inside an [`OutOfMemory`](wgpu::ErrorFilter::OutOfMemory) error scope; route a
+/// captured allocation failure per `outcome` — [`BlurError::DeviceOutOfMemory`] where the device
+/// survives the rejection, [`BlurError::DeviceLost`] where wgpu-core has already marked the device
+/// invalid (`device.lose()`) inside the create call. On the `DeviceLost` arm the device is gone at
+/// return; that is the capture instant, not a re-checked liveness status. Only out-of-memory is
+/// scoped; validation and internal faults are crate bugs left to wgpu's default panic handler.
+/// Native-only (see [`poll_once`]). The result MUST be checked (`?`) before it is consumed by any
+/// later call — an out-of-memory handle consumed downstream raises an uncatchable `Validation`
+/// error (wgpu's contagious invalidity). Push, create, and pop run on one thread with nothing
+/// yielding between, because a [`wgpu::ErrorScopeGuard`] is thread-local (`!Send`).
+fn scoped_oom<T>(
+    device: &wgpu::Device,
+    outcome: OomOutcome,
+    create: impl FnOnce() -> T,
+) -> Result<T, BlurError> {
     let scope = device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
     let resource = create();
     match poll_once(scope.pop()) {
         Some(None) => Ok(resource),
-        Some(Some(err)) => Err(BlurError::DeviceOutOfMemory {
-            source: Box::new(err),
+        Some(Some(err)) => Err(match outcome {
+            OomOutcome::Recoverable => BlurError::DeviceOutOfMemory {
+                source: Box::new(err),
+            },
+            OomOutcome::DeviceLost => BlurError::DeviceLost {
+                source: Box::new(err),
+            },
         }),
         None => panic!(
             "backdrop-blur: OOM error scope did not resolve synchronously; native-only path (design v5)"
@@ -738,7 +776,10 @@ fn uniform_buffer<T: bytemuck::Pod>(
     let unpadded_size = contents.len() as wgpu::BufferAddress;
     let align_mask = wgpu::COPY_BUFFER_ALIGNMENT - 1;
     let padded_size = ((unpadded_size + align_mask) & !align_mask).max(wgpu::COPY_BUFFER_ALIGNMENT);
-    let buffer = scoped_oom(device, || {
+    // MIXED: primary alloc non-fatal, but the mapped_at_creation path's internal StagingBuffer::new
+    // is fatal on OOM; tagged Recoverable per approval decision (d), backstopped by the host's
+    // device-lost callback — see the DeviceOutOfMemory rustdoc.
+    let buffer = scoped_oom(device, OomOutcome::Recoverable, || {
         device.create_buffer(&wgpu::BufferDescriptor {
             label: Some(label),
             size: padded_size,
@@ -763,7 +804,10 @@ fn scratch_view(
     size: [u32; 2],
     label: &str,
 ) -> Result<wgpu::TextureView, BlurError> {
-    let texture = scoped_oom(device, || {
+    // MIXED: primary alloc non-fatal, but RENDER_ATTACHMENT's internal clear-view creation is
+    // fatal on OOM; tagged Recoverable per approval decision (d), backstopped by the host's
+    // device-lost callback — see the DeviceOutOfMemory rustdoc.
+    let texture = scoped_oom(device, OomOutcome::Recoverable, || {
         device.create_texture(&wgpu::TextureDescriptor {
             label: Some(label),
             size: wgpu::Extent3d {
@@ -917,7 +961,8 @@ fn build_pipeline(
     format: wgpu::TextureFormat,
     blend: Option<wgpu::BlendState>,
 ) -> Result<wgpu::RenderPipeline, BlurError> {
-    scoped_oom(device, || {
+    // wgpu-core 29.0.3: create_render_pipeline routes solely through fatal handle_hal_error -> device.lose()
+    scoped_oom(device, OomOutcome::DeviceLost, || {
         device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("backdrop-blur pipeline"),
             layout: Some(layout),
