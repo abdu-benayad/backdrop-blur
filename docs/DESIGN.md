@@ -465,9 +465,11 @@ that *does* expose a sampleable-backdrop hook drops in as an additive adapter cr
 - **Genuine validation / internal GPU faults (wgpu)** → **deliberately panic** (crate bugs — this crate
   builds its own descriptors). Only their out-of-memory *cause* is caught, at the creating call, before
   the invalid handle cascades.
-- **wasm (own-loop)** → out-of-memory is **not** captured (the scope's `pop()` is a deferred promise a
-  synchronous frame call cannot read); it reaches the default handler and panics. Native-only; web frosted
-  glass is the glow/WebGL2 grab-pass path.
+- **wasm (own-loop)** → the path now **compiles** for wasm32, but **native is the only supported runtime**:
+  it reads the `OutOfMemory` scope with a single synchronous poll, which the browser's default (WebGPU)
+  dispatch returns as a deferred promise, so the crate's own guard panics rather than capturing — it does
+  **not** fall through to wgpu's default handler. Web frosted glass remains the glow/WebGL2 grab-pass path;
+  the deferred-read design is tracked in `own-loop-wasm-device-fault-async`.
 - **Unsupported target format** → `Err(UnsupportedTarget)` from the lazy per-format pipeline build (M3).
 - **Resize / DPI change** → the `PingPongKey { size, levels }` chain is rebuilt; stale keys age out
   (the composite pipeline is keyed *separately* by target format — §4.4; the scratch key carries no format).

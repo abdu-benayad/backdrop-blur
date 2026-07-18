@@ -33,8 +33,9 @@ pub enum BlurError {
     /// by an `OutOfMemory` error scope at the creating call. Distinct from the internal-invariant
     /// [`ResourceCreation`](Self::ResourceCreation) assertions. Carries no resource stage: an
     /// out-of-memory is a machine-state condition, and the recovery contract does not branch on which
-    /// resource failed. **Native-only:** on wasm this is not captured and reaches wgpu's default
-    /// (panicking) handler. Covers `backdrop-blur`'s own creations only — allocations inside
+    /// resource failed. **Native-only:** on wasm the synchronous scope read is unsupported on the browser's default
+    /// WebGPU dispatch (its `pop()` is a deferred promise), so the own-loop path panics via this
+    /// crate's own guard rather than reaching wgpu's default handler. Covers `backdrop-blur`'s own creations only — allocations inside
     /// `egui_wgpu` are outside this crate's reach. The creations wgpu treats as device-fatal on
     /// out-of-memory (layouts, shader modules, pipelines, bind groups) report
     /// [`DeviceLost`](Self::DeviceLost) instead.
