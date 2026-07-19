@@ -4,7 +4,7 @@
 
 use crate::Surface;
 use backdrop_blur_core::{BackdropBlur, BlurError, BlurRequest, Region, RepaintPolicy, Scale};
-use backdrop_blur_wgpu::{SourceColorSpace, SourceView, WgpuBlur};
+use backdrop_blur_wgpu::{OomScope, SourceColorSpace, SourceView, WgpuBlur};
 
 /// Own-loop-only resolution of a [`Surface`]. This `impl` lives in the `own-loop`-gated module on
 /// purpose: it builds a **top-left** [`BlurRequest`] (the egui-wgpu sampling convention), which is
@@ -149,13 +149,15 @@ impl OwnLoopRenderer {
     }
 
     /// The intermediate sized to `size`, recreated only on a size change. Total — no panic path: a
-    /// stale-size intermediate is dropped, a matching one reused, or a fresh one created inside an
-    /// `OutOfMemory` error scope (returning [`BlurError::DeviceOutOfMemory`] on a device
-    /// out-of-memory rather than panicking — native-only). [`Option::insert`] then stores and
-    /// returns it without any `unwrap`.
+    /// stale-size intermediate is dropped, a matching one reused, or a fresh one created through
+    /// the backend's [`OomScope`] (native: a device out-of-memory is returned as
+    /// [`BlurError::DeviceOutOfMemory`] before the texture is used; web: the deferred fault is
+    /// parked and surfaced through the backend's fault report). [`Option::insert`] then stores
+    /// and returns it without any `unwrap`.
     fn intermediate(
         &mut self,
         device: &wgpu::Device,
+        scope: &OomScope<'_>,
         size: [u32; 2],
     ) -> Result<&Intermediate, BlurError> {
         // Take the cached intermediate, keeping it only if its size still matches. A stale one is
@@ -165,9 +167,7 @@ impl OwnLoopRenderer {
             Some(existing) => existing,
             None => {
                 let format = self.target_format;
-                // wgpu-core 29.0.3: create_texture primary alloc non-fatal; MIXED (internal
-                // clear-view fatal) tagged Recoverable per decision (d).
-                let texture = scoped_oom(device, OomOutcome::Recoverable, || {
+                let texture = scope.scoped_intermediate(|| {
                     device.create_texture(&wgpu::TextureDescriptor {
                         label: Some("backdrop-blur egui intermediate"),
                         size: wgpu::Extent3d {
@@ -238,9 +238,12 @@ impl OwnLoopRenderer {
 
         // One owned view of the intermediate, used by reference for the egui→intermediate pass
         // (the pass clones it via forget_lifetime) and then moved into the blur `SourceView`.
+        // The creation runs through the backend's OomScope (borrowing only `device`, so `blur`
+        // stays free for the composite below).
         let size = frame.screen.size_in_pixels;
+        let scope = blur.creation_scope(device);
         let intermediate_view = self
-            .intermediate(device, size)?
+            .intermediate(device, &scope, size)?
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
 
@@ -318,86 +321,6 @@ pub struct FrameInput<'a> {
     pub textures_delta: &'a egui::TexturesDelta,
     /// Screen size (physical px) + pixels-per-point.
     pub screen: egui_wgpu::ScreenDescriptor,
-}
-
-/// Poll a future exactly once, returning its output if already ready. Mirrors the wgpu backend's
-/// helper: on the native backend an error scope's `pop()` future is already-resolved, so a single
-/// poll suffices with no executor. `Pending` is the non-native path this crate does not support.
-fn poll_once<F: std::future::Future>(fut: F) -> Option<F::Output> {
-    let mut fut = std::pin::pin!(fut);
-    let waker = std::task::Waker::noop();
-    let mut cx = std::task::Context::from_waker(waker);
-    match fut.as_mut().poll(&mut cx) {
-        std::task::Poll::Ready(v) => Some(v),
-        std::task::Poll::Pending => None,
-    }
-}
-
-/// Whether a rejected allocation at a `scoped_oom` site leaves the device alive — a deliberate
-/// local mirror of the wgpu backend's private `OomOutcome`, so this copy's call sites must also
-/// state their arm explicitly instead of silently defaulting to the recoverable variant. The
-/// mapping is a static claim about wgpu-core 29.0.3, guarded by the `wgpu_core_version_pin`
-/// tripwire test in the wgpu backend.
-enum OomOutcome {
-    /// The allocation's handler skips `lose()` on out-of-memory: report
-    /// [`BlurError::DeviceOutOfMemory`], the device survives, the host may retry.
-    Recoverable,
-    /// The allocation's handler calls `lose()` before returning: report [`BlurError::DeviceLost`],
-    /// the device is already gone at return, the host must tear down.
-    #[expect(
-        dead_code,
-        reason = "classification parity with the wgpu backend copy; only the non-fatal (Recoverable) \
-                  arm is exercised in the own-loop adapter today — a future fatal own-loop creation \
-                  would construct this and retire the expect"
-    )]
-    DeviceLost,
-}
-
-/// Fold an error and its `source()` chain into one `": "`-joined string. `wgpu::Error`'s `Display`
-/// is a bare constant (`"Out of Memory"`); the resource that faulted lives one level down, in
-/// wgpu-core's `ContextError` source (the API call + descriptor label). A plain `String` boxed as
-/// the backend-error source is chain-terminal, so the chain is flattened into the message here —
-/// keeping that diagnostic while staying `Send + Sync` on wasm, where the live `wgpu::Error` is not.
-fn describe(err: &(dyn std::error::Error + 'static)) -> String {
-    let mut parts = vec![err.to_string()];
-    let mut cause = err.source();
-    while let Some(c) = cause {
-        parts.push(c.to_string());
-        cause = c.source();
-    }
-    parts.join(": ")
-}
-
-/// Run `create` inside an [`OutOfMemory`](wgpu::ErrorFilter::OutOfMemory) error scope and route a
-/// captured allocation failure per `outcome` — [`BlurError::DeviceOutOfMemory`] where the device
-/// survives the rejection, [`BlurError::DeviceLost`] where wgpu-core has already marked the device
-/// invalid inside the create call (on that arm the device is gone at return; that is the capture
-/// instant, not a re-checked liveness status). A deliberate local mirror of the wgpu backend's
-/// private `scoped_oom`, duplicated rather than exposing that helper as public API. Native-only:
-/// the scope is read synchronously (see [`poll_once`]); the result MUST be checked (`?`) before the
-/// handle is consumed — an out-of-memory handle consumed downstream raises an uncatchable
-/// `Validation` error (wgpu's contagious invalidity).
-fn scoped_oom<T>(
-    device: &wgpu::Device,
-    outcome: OomOutcome,
-    create: impl FnOnce() -> T,
-) -> Result<T, BlurError> {
-    let scope = device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
-    let resource = create();
-    match poll_once(scope.pop()) {
-        Some(None) => Ok(resource),
-        Some(Some(err)) => Err(match outcome {
-            OomOutcome::Recoverable => BlurError::DeviceOutOfMemory {
-                source: describe(&err).into(),
-            },
-            OomOutcome::DeviceLost => BlurError::DeviceLost {
-                source: describe(&err).into(),
-            },
-        }),
-        None => panic!(
-            "backdrop-blur: OOM error scope did not resolve synchronously; native-only path (design v5)"
-        ),
-    }
 }
 
 /// Begin a render pass that clears `view`, returning a `'static` pass (egui-wgpu's `render`

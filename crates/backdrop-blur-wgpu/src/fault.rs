@@ -5,10 +5,11 @@
 //! instead *parks* each scope's outcome as a [`PendingFault`] in a [`FaultLog`] shared between
 //! the backend and the spawned pop-awaiting tasks, and folds drained faults into one
 //! latest-wins [`FaultReport`] the host takes once per frame. This module is the pure half of
-//! that machinery — no GPU types beyond [`BlurError`], compiled and unit-tested on every
-//! target; the wasm32 collector that feeds it lands with the web frame path.
+//! that machinery — pure data (the only GPU types are [`SlotKey`]'s payloads), compiled and
+//! unit-tested on every target; the wasm32 collector that feeds it lands with the web frame
+//! path.
 
-use backdrop_blur_core::BlurError;
+use backdrop_blur_core::{BlurError, PingPongKey};
 
 /// The host-facing *kind* of resource a deferred fault names. Diagnostic only: the recovery
 /// contract never branches on which slot faulted (design D2) — every report means "do not
@@ -25,6 +26,26 @@ pub enum FaultSlot {
     /// A per-frame uniform buffer.
     UniformBuffer,
     /// A per-frame bind group.
+    BindGroup,
+    /// The adapter-owned offscreen intermediate texture.
+    Intermediate,
+}
+
+/// The *keyed* internal attribution of a creation: which cache entry (if any) a deferred fault
+/// at that creation site poisons. The drain uses the key to find and invalidate the entry; the
+/// host-facing report carries only the derived [`FaultSlot`] kind. Deliberately `pub(crate)`:
+/// cache keys are backend internals, not host vocabulary.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum SlotKey {
+    /// The Gaussian ping-pong chain cached under this key.
+    Scratch(PingPongKey),
+    /// The dual-Kawase pyramid chain cached under this key.
+    Pyramid(PingPongKey),
+    /// The composite pipeline cached for this target format.
+    Composite(wgpu::TextureFormat),
+    /// A per-frame uniform buffer (transient — nothing cached to invalidate).
+    Uniform,
+    /// A per-frame bind group (transient — nothing cached to invalidate).
     BindGroup,
     /// The adapter-owned offscreen intermediate texture.
     Intermediate,
