@@ -171,6 +171,11 @@ pub struct WgpuBlur {
     /// `record` can detect a stale handle, and into each cache entry so the wasm32 fault drain
     /// can tell a live fault from a stale one.
     generation: u64,
+    /// The shared deferred-fault collector for the web dispatch: each frame-path creation's
+    /// spawned pop-awaiting task records its outcome here; the frame path drains it and folds
+    /// reportable faults into the host report.
+    #[cfg(target_arch = "wasm32")]
+    faults: fault::SharedFaultLog,
 }
 
 // --- Constructors ---
@@ -186,6 +191,7 @@ impl WgpuBlur {
     /// or [`BlurError::DeviceOutOfMemory`] for the sampler (the device survives). A genuine
     /// validation fault (a malformed shader or layout descriptor) is a crate bug and still panics via
     /// wgpu's default handler.
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn new(device: &wgpu::Device) -> Result<Self, BlurError> {
         // wgpu-core 29.0.3: create_bind_group_layout routes solely through fatal handle_hal_error -> device.lose()
         let bind_group_layout = scoped_oom(device, OomOutcome::DeviceLost, || {
@@ -259,6 +265,113 @@ impl WgpuBlur {
             frame: 0,
             generation: 0,
         })
+    }
+
+    /// The web (WebGPU-dispatch) twin of the native constructor: the same creations in the same
+    /// order, each awaited through its own `OutOfMemory` error scope — so every fault is known
+    /// before the next creation consumes anything (check-before-consume), and a construction
+    /// out-of-memory is this call's `Err` instead of a deferred panic. On this dispatch a
+    /// creation out-of-memory does not kill the device (measured), so every fault maps to
+    /// [`BlurError::DeviceOutOfMemory`]; [`BlurError::DeviceLost`] is never produced by the web
+    /// path — the host's own device-lost callback remains the loss signal. A genuine validation
+    /// fault (a malformed shader or layout descriptor) is a crate bug and still panics via
+    /// wgpu's default handler.
+    #[cfg(target_arch = "wasm32")]
+    pub async fn new(device: &wgpu::Device) -> Result<Self, BlurError> {
+        let bind_group_layout =
+            scoped_oom_awaited(device, || make_bind_group_layout(device)).await?;
+        let pipeline_layout =
+            scoped_oom_awaited(device, || make_pipeline_layout(device, &bind_group_layout)).await?;
+        let sampler = scoped_oom_awaited(device, || make_sampler(device)).await?;
+        let gaussian_shader = scoped_oom_awaited(device, || make_gaussian_shader(device)).await?;
+        let downsample_shader =
+            scoped_oom_awaited(device, || make_downsample_shader(device)).await?;
+        let upsample_shader = scoped_oom_awaited(device, || make_upsample_shader(device)).await?;
+        let composite_shader = scoped_oom_awaited(device, || make_composite_shader(device)).await?;
+
+        // All blur passes write the internal scratch format with no blend; only the composite
+        // matches the caller's format and blends.
+        let gaussian_pipeline = scoped_oom_awaited(device, || {
+            make_pipeline(
+                device,
+                &pipeline_layout,
+                &gaussian_shader,
+                SCRATCH_FORMAT,
+                None,
+            )
+        })
+        .await?;
+        let downsample_pipeline = scoped_oom_awaited(device, || {
+            make_pipeline(
+                device,
+                &pipeline_layout,
+                &downsample_shader,
+                SCRATCH_FORMAT,
+                None,
+            )
+        })
+        .await?;
+        let upsample_pipeline = scoped_oom_awaited(device, || {
+            make_pipeline(
+                device,
+                &pipeline_layout,
+                &upsample_shader,
+                SCRATCH_FORMAT,
+                None,
+            )
+        })
+        .await?;
+
+        Ok(Self {
+            pipeline_layout,
+            bind_group_layout,
+            sampler,
+            gaussian_pipeline,
+            downsample_pipeline,
+            upsample_pipeline,
+            composite_shader,
+            composite_pipelines: HashMap::new(),
+            scratch: HashMap::new(),
+            pyramids: HashMap::new(),
+            frame: 0,
+            generation: 0,
+            faults: fault::SharedFaultLog::default(),
+        })
+    }
+
+    /// Build and cache the composite pipeline for `format` now, awaited and checked — the
+    /// construction-time home of the one heavyweight frame-path build. Call it once per target
+    /// format before the first frame (the egui adapter's web constructor does), so the frame
+    /// path never lazily builds a pipeline whose deferred fault could only be reported after the
+    /// frame that consumed it. The guarantee is **per-format**: a direct seam user driving other
+    /// target formats goes through the frame path's deferred lazy build instead.
+    #[cfg(target_arch = "wasm32")]
+    pub async fn prewarm_composite(
+        &mut self,
+        device: &wgpu::Device,
+        format: wgpu::TextureFormat,
+    ) -> Result<(), BlurError> {
+        if self.composite_pipelines.contains_key(&format) {
+            return Ok(());
+        }
+        let pipeline = scoped_oom_awaited(device, || {
+            make_pipeline(
+                device,
+                &self.pipeline_layout,
+                &self.composite_shader,
+                format,
+                Some(over_blend()),
+            )
+        })
+        .await?;
+        self.composite_pipelines.insert(
+            format,
+            CompositeEntry {
+                pipeline,
+                created_generation: self.generation,
+            },
+        );
+        Ok(())
     }
 }
 
@@ -738,6 +851,14 @@ impl BackdropBlur for WgpuBlur {
 /// recovery meaning, later delivery).
 pub struct OomScope<'a> {
     device: &'a wgpu::Device,
+    /// The backend's shared fault log, cloned in so the spawned pop-awaiting tasks outlive the
+    /// scope (which borrows nothing of the backend).
+    #[cfg(target_arch = "wasm32")]
+    faults: fault::SharedFaultLog,
+    /// The backend generation the scope was created under; stamped into every parked fault so
+    /// the drain can tell a live fault from a stale one.
+    #[cfg(target_arch = "wasm32")]
+    generation: u64,
 }
 
 impl OomScope<'_> {
@@ -748,6 +869,7 @@ impl OomScope<'_> {
     /// consumed downstream raises an uncatchable `Validation` error — wgpu's contagious
     /// invalidity). The web twin inverts the unused half: `outcome` is ignored (the web path has
     /// no device-fatal creation arm) and the parked fault is attributed per `slot`.
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn scoped<T>(
         &self,
         outcome: OomOutcome,
@@ -755,6 +877,40 @@ impl OomScope<'_> {
         create: impl FnOnce() -> T,
     ) -> Result<T, BlurError> {
         scoped_oom(self.device, outcome, create)
+    }
+
+    /// The web twin of [`scoped`](Self::scoped): push → create → **call pop synchronously** (the
+    /// web backend's LIFO scope counter decrements at the pop call, independent of the await) →
+    /// spawn a task that awaits the deferred resolution and parks any fault in the backend's log,
+    /// attributed per `slot` and stamped with the scope's generation → return the (possibly
+    /// invalid) resource as `Ok`. The frame path never awaits and never panics; the fault
+    /// surfaces through the backend's fault report on a later frame. `outcome` is ignored: on
+    /// this dispatch a creation out-of-memory does not kill the device (measured), so there is
+    /// no device-fatal arm to route.
+    #[cfg(target_arch = "wasm32")]
+    pub(crate) fn scoped<T>(
+        &self,
+        _outcome: OomOutcome,
+        slot: SlotKey,
+        create: impl FnOnce() -> T,
+    ) -> Result<T, BlurError> {
+        let scope = self.device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
+        let resource = create();
+        // `pop` consumes the (!Send) guard immediately; only the owned 'static future is moved
+        // into the spawned task, so the push/pop pairing stays on this thread and in LIFO order.
+        let pending = scope.pop();
+        let faults = std::rc::Rc::clone(&self.faults);
+        let generation = self.generation;
+        wasm_bindgen_futures::spawn_local(async move {
+            if let Some(err) = pending.await {
+                faults.borrow_mut().record(fault::PendingFault {
+                    slot_kind: slot.kind(),
+                    generation,
+                    message: describe(&err),
+                });
+            }
+        });
+        Ok(resource)
     }
 
     /// The one public creation route, for the egui adapter's offscreen intermediate texture:
@@ -772,10 +928,40 @@ impl OomScope<'_> {
 
 impl WgpuBlur {
     /// The [`OomScope`] every creation for this backend must run through. The scope borrows only
-    /// `device` (the `&self` borrow ends at return), so it can be held across the backend's
-    /// `&mut self` frame-path calls.
+    /// `device` (the `&self` borrow ends at return — on the web the fault log is cloned in, not
+    /// borrowed), so it can be held across the backend's `&mut self` frame-path calls.
     pub fn creation_scope<'a>(&self, device: &'a wgpu::Device) -> OomScope<'a> {
-        OomScope { device }
+        OomScope {
+            device,
+            #[cfg(target_arch = "wasm32")]
+            faults: std::rc::Rc::clone(&self.faults),
+            #[cfg(target_arch = "wasm32")]
+            generation: self.generation,
+        }
+    }
+}
+
+/// The awaited construction-path scope (wasm32): push scope → create → pop → **await** the
+/// deferred resolution; a caught fault maps to [`BlurError::DeviceOutOfMemory`] (no web
+/// classification — a creation out-of-memory does not kill the device on this dispatch, so
+/// [`BlurError::DeviceLost`] is never produced here). Used only where awaiting is allowed
+/// (constructors / prewarm), never on the frame path.
+///
+/// Callers MUST await each creation **strictly sequentially — never `join!`/`select`**: the
+/// device's error-scope stack is LIFO, and concurrent push/pop interleaving would corrupt it
+/// (pairing a pop with another creation's scope).
+#[cfg(target_arch = "wasm32")]
+async fn scoped_oom_awaited<T>(
+    device: &wgpu::Device,
+    create: impl FnOnce() -> T,
+) -> Result<T, BlurError> {
+    let scope = device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
+    let resource = create();
+    match scope.pop().await {
+        None => Ok(resource),
+        Some(err) => Err(BlurError::DeviceOutOfMemory {
+            source: describe(&err).into(),
+        }),
     }
 }
 
@@ -783,6 +969,7 @@ impl WgpuBlur {
 /// backend an error scope's `pop()` future is always already-resolved (the fault was recorded
 /// synchronously during the create call), so a single poll suffices — no executor, no blocking. A
 /// `Pending` result means the non-native (deferred-promise) path, which this crate does not support.
+#[cfg(not(target_arch = "wasm32"))]
 fn poll_once<F: std::future::Future>(fut: F) -> Option<F::Output> {
     let mut fut = std::pin::pin!(fut);
     let waker = std::task::Waker::noop();
@@ -833,6 +1020,7 @@ fn describe(err: &(dyn std::error::Error + 'static)) -> String {
 /// later call — an out-of-memory handle consumed downstream raises an uncatchable `Validation`
 /// error (wgpu's contagious invalidity). Push, create, and pop run on one thread with nothing
 /// yielding between, because a [`wgpu::ErrorScopeGuard`] is thread-local (`!Send`).
+#[cfg(not(target_arch = "wasm32"))]
 fn scoped_oom<T>(
     device: &wgpu::Device,
     outcome: OomOutcome,
@@ -867,6 +1055,7 @@ fn scoped_oom<T>(
 ///
 /// The native form does not need the queue (`_queue`); the wasm32 twin uploads via
 /// `queue.write_buffer` instead of mapping, so the shared signature carries it.
+#[cfg(not(target_arch = "wasm32"))]
 fn uniform_buffer<T: bytemuck::Pod>(
     scope: &OomScope<'_>,
     _queue: &wgpu::Queue,
@@ -893,6 +1082,39 @@ fn uniform_buffer<T: bytemuck::Pod>(
         .slice(..unpadded_size as usize)
         .copy_from_slice(contents);
     buffer.unmap();
+    Ok(buffer)
+}
+
+/// The web twin of [`uniform_buffer`]: same signature, **no mapped-consume call in the fault
+/// window**. On this dispatch a creation fault resolves only after the frame, so the native
+/// mapped-at-creation body would `get_mapped_range_mut` a possibly-invalid buffer before the
+/// fault is knowable — a fatal panic path. Instead the buffer is created **unmapped** (with
+/// `COPY_DST`) inside the deferred scope and uploaded via `queue.write_buffer`; on an invalid
+/// buffer that raises an out-of-band validation error the browser contains, never a panic. The
+/// contents are zero-padded to `COPY_BUFFER_ALIGNMENT`, matching the native padding maths (a
+/// no-op for this crate's 16-byte-multiple Pod uniforms).
+#[cfg(target_arch = "wasm32")]
+fn uniform_buffer<T: bytemuck::Pod>(
+    scope: &OomScope<'_>,
+    queue: &wgpu::Queue,
+    value: &T,
+    label: &str,
+) -> Result<wgpu::Buffer, BlurError> {
+    let contents = bytemuck::bytes_of(value);
+    let unpadded_size = contents.len() as wgpu::BufferAddress;
+    let align_mask = wgpu::COPY_BUFFER_ALIGNMENT - 1;
+    let padded_size = ((unpadded_size + align_mask) & !align_mask).max(wgpu::COPY_BUFFER_ALIGNMENT);
+    let buffer = scope.scoped(OomOutcome::Recoverable, SlotKey::Uniform, || {
+        scope.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some(label),
+            size: padded_size,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        })
+    })?;
+    let mut padded = contents.to_vec();
+    padded.resize(padded_size as usize, 0);
+    queue.write_buffer(&buffer, 0, &padded);
     Ok(buffer)
 }
 
@@ -1182,7 +1404,7 @@ fn make_pipeline(
     })
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
     use super::*;
 

@@ -51,6 +51,28 @@ pub(crate) enum SlotKey {
     Intermediate,
 }
 
+impl SlotKey {
+    /// The host-facing kind of this keyed slot — what a [`FaultReport`] names, with the cache
+    /// key stripped.
+    #[cfg_attr(
+        all(not(test), not(target_arch = "wasm32")),
+        expect(
+            dead_code,
+            reason = "called only by the wasm32 deferred collector; unit-tested natively"
+        )
+    )]
+    pub(crate) fn kind(self) -> FaultSlot {
+        match self {
+            Self::Scratch(_) => FaultSlot::Scratch,
+            Self::Pyramid(_) => FaultSlot::Pyramid,
+            Self::Composite(_) => FaultSlot::CompositePipeline,
+            Self::Uniform => FaultSlot::UniformBuffer,
+            Self::BindGroup => FaultSlot::BindGroup,
+            Self::Intermediate => FaultSlot::Intermediate,
+        }
+    }
+}
+
 /// The latest-wins fault state the host reads once per frame. `error` and `slot` are the most
 /// recent reportable fault (always [`BlurError::DeviceOutOfMemory`] — the web path has no
 /// device-fatal creation arm); `occurrences` counts every reportable fault folded in since the
@@ -73,7 +95,7 @@ pub struct FaultReport {
     not(test),
     expect(
         dead_code,
-        reason = "constructed only by the wasm32 deferred collector (lands with the web frame path); unit-tested natively"
+        reason = "fields are read only by the fault drain (lands with the absorb step); unit-tested natively"
     )
 )]
 pub(crate) struct PendingFault {
@@ -98,7 +120,7 @@ pub(crate) struct FaultLog {
     not(test),
     expect(
         dead_code,
-        reason = "called only by the wasm32 deferred collector (lands with the web frame path); unit-tested natively"
+        reason = "the drain/report half is called only by the wasm32 absorb step (lands next); unit-tested natively"
     )
 )]
 impl FaultLog {
@@ -148,10 +170,10 @@ impl FaultLog {
 /// because the wasm runtime this path supports is single-threaded (the design excludes
 /// atomics-wasm); native code only touches it in unit tests.
 #[cfg_attr(
-    not(test),
+    all(not(test), not(target_arch = "wasm32")),
     expect(
         dead_code,
-        reason = "used only by the wasm32 deferred collector (lands with the web frame path)"
+        reason = "used only by the wasm32 deferred collector; unit-tested natively"
     )
 )]
 pub(crate) type SharedFaultLog = std::rc::Rc<std::cell::RefCell<FaultLog>>;
@@ -227,6 +249,23 @@ mod tests {
             .borrow_mut()
             .fold_report(FaultSlot::BindGroup, "oom".to_owned());
         assert!(log.borrow_mut().take_report().is_some());
+    }
+
+    #[test]
+    fn slot_key_kind_strips_the_key() {
+        let key = PingPongKey {
+            size: [8, 8],
+            levels: 1,
+        };
+        assert_eq!(SlotKey::Scratch(key).kind(), FaultSlot::Scratch);
+        assert_eq!(SlotKey::Pyramid(key).kind(), FaultSlot::Pyramid);
+        assert_eq!(
+            SlotKey::Composite(wgpu::TextureFormat::Bgra8Unorm).kind(),
+            FaultSlot::CompositePipeline
+        );
+        assert_eq!(SlotKey::Uniform.kind(), FaultSlot::UniformBuffer);
+        assert_eq!(SlotKey::BindGroup.kind(), FaultSlot::BindGroup);
+        assert_eq!(SlotKey::Intermediate.kind(), FaultSlot::Intermediate);
     }
 
     #[test]

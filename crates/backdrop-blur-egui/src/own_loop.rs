@@ -130,6 +130,7 @@ impl OwnLoopRenderer {
     /// format ([`is_supported_target`]) — the adapter pins the decode-in-shader gamma model, which
     /// only matches non-sRGB targets (egui#3168). This makes the documented format assumption a
     /// checked contract rather than prose.
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn new(
         device: &wgpu::Device,
         target_format: wgpu::TextureFormat,
@@ -139,6 +140,34 @@ impl OwnLoopRenderer {
                 format: format!("{target_format:?} (own-loop needs a non-sRGB Unorm target)"),
             });
         }
+        let renderer =
+            egui_wgpu::Renderer::new(device, target_format, egui_wgpu::RendererOptions::default());
+        Ok(Self {
+            renderer,
+            target_format,
+            intermediate: None,
+        })
+    }
+
+    /// The web (WebGPU-dispatch) twin of the native constructor. Same allowlist check, plus one
+    /// honest difference: it takes the blur backend and awaits
+    /// [`WgpuBlur::prewarm_composite`] for `target_format` — construction verifies the composite
+    /// pipeline against the backend this renderer will drive, so the frame path never lazily
+    /// builds a pipeline whose deferred fault could only surface after the frame that consumed
+    /// it. Allocations *inside* `egui_wgpu::Renderer::new` remain third-party and unscoped — the
+    /// same named exclusion as native.
+    #[cfg(target_arch = "wasm32")]
+    pub async fn new(
+        device: &wgpu::Device,
+        target_format: wgpu::TextureFormat,
+        blur: &mut WgpuBlur,
+    ) -> Result<Self, BlurError> {
+        if !is_supported_target(target_format) {
+            return Err(BlurError::UnsupportedTarget {
+                format: format!("{target_format:?} (own-loop needs a non-sRGB Unorm target)"),
+            });
+        }
+        blur.prewarm_composite(device, target_format).await?;
         let renderer =
             egui_wgpu::Renderer::new(device, target_format, egui_wgpu::RendererOptions::default());
         Ok(Self {

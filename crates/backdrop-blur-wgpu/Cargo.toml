@@ -18,6 +18,11 @@ wgpu = { workspace = true }
 # `#![forbid(unsafe_code)]`. The GPU-uniform structs live here (not core), per DESIGN S2.
 bytemuck = { workspace = true }
 
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+# Spawns the deferred error-scope pop awaits on the browser microtask queue. Already in the
+# lock via wgpu's own web dispatch — no new resolution.
+wasm-bindgen-futures = "0.4"
+
 [dev-dependencies]
 # Block on wgpu's async adapter/device futures in the gated GPU tests.
 pollster = "0.4"
