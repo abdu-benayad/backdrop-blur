@@ -116,6 +116,10 @@ struct ScratchChain {
     views: [wgpu::TextureView; 2],
     /// The frame this chain was last touched by `ensure_scratch`; drives last-frame-used eviction.
     last_used_frame: u64,
+    /// The backend generation active when this chain was created; the wasm32 fault drain compares
+    /// it against a deferred fault's stamp to tell a live fault from a stale one.
+    #[expect(dead_code, reason = "read only by the wasm32 fault drain")]
+    created_generation: u64,
 }
 
 /// A dual-Kawase mip pyramid plus the frame it was last used: `N + 1` decreasing-size views (level 0
@@ -125,6 +129,19 @@ struct PyramidChain {
     views: Vec<wgpu::TextureView>,
     /// The frame this chain was last touched by `ensure_pyramid`; drives last-frame-used eviction.
     last_used_frame: u64,
+    /// The backend generation active when this chain was created; the wasm32 fault drain compares
+    /// it against a deferred fault's stamp to tell a live fault from a stale one.
+    #[expect(dead_code, reason = "read only by the wasm32 fault drain")]
+    created_generation: u64,
+}
+
+/// A cached per-target-format composite pipeline plus the generation it was created in (the
+/// wasm32 fault drain's staleness stamp, mirroring the chains' `created_generation`).
+struct CompositeEntry {
+    pipeline: wgpu::RenderPipeline,
+    /// The backend generation active when this pipeline was built.
+    #[expect(dead_code, reason = "read only by the wasm32 fault drain")]
+    created_generation: u64,
 }
 
 /// The wgpu implementation of [`BackdropBlur`]. Holds the fixed pipeline machinery (bind-group
@@ -139,7 +156,7 @@ pub struct WgpuBlur {
     downsample_pipeline: wgpu::RenderPipeline,
     upsample_pipeline: wgpu::RenderPipeline,
     composite_shader: wgpu::ShaderModule,
-    composite_pipelines: HashMap<wgpu::TextureFormat, wgpu::RenderPipeline>,
+    composite_pipelines: HashMap<wgpu::TextureFormat, CompositeEntry>,
     scratch: HashMap<PingPongKey, ScratchChain>,
     /// Dual-Kawase mip pyramids: `N + 1` decreasing-size views, level 0 = full clipped size.
     pyramids: HashMap<PingPongKey, PyramidChain>,
@@ -147,7 +164,10 @@ pub struct WgpuBlur {
     /// compares each chain's `last_used_frame` against, so a resized/moved surface's old-size chains
     /// are dropped instead of accumulating one per distinct size forever.
     frame: u64,
-    /// Bumped each `prepare`; stamped into [`WgpuPrepared`] so `record` can detect a stale handle.
+    /// Bumped once per frosted `prepare` (in [`Self::begin_frame`], so the generation active
+    /// *during* a prepare's creations is the stamped one); stamped into [`WgpuPrepared`] so
+    /// `record` can detect a stale handle, and into each cache entry so the wasm32 fault drain
+    /// can tell a live fault from a stale one.
     generation: u64,
 }
 
@@ -281,13 +301,16 @@ impl WgpuBlur {
 // --- Internal resource management ---
 
 impl WgpuBlur {
-    /// Advance to the next frame and evict every scratch/pyramid chain untouched for
+    /// Advance to the next frame — bumping the generation, so every creation this prepare makes
+    /// is stamped with the generation its `WgpuPrepared` carries — and evict every scratch/pyramid
+    /// chain untouched for
     /// [`RETENTION_FRAMES`]. Called once at the top of [`prepare`](BackdropBlur::prepare), before any
     /// `ensure_*`, so the chain a surface is about to use this frame is never evicted. Dropping a
     /// `HashMap` entry drops its `wgpu::TextureView`s, releasing the underlying textures by refcount
     /// — no explicit GPU free. The stale-set decision is the pure, core-shared [`evict_decision`].
     fn begin_frame(&mut self) {
         self.frame = self.frame.wrapping_add(1);
+        self.generation += 1;
         let stale = evict_decision(
             self.scratch.iter().map(|(k, c)| (*k, c.last_used_frame)),
             self.frame,
@@ -320,6 +343,7 @@ impl WgpuBlur {
             ScratchChain {
                 views: [view_a, view_b],
                 last_used_frame: self.frame,
+                created_generation: self.generation,
             },
         );
         Ok(())
@@ -343,6 +367,7 @@ impl WgpuBlur {
             PyramidChain {
                 views,
                 last_used_frame: self.frame,
+                created_generation: self.generation,
             },
         );
         Ok(())
@@ -364,7 +389,13 @@ impl WgpuBlur {
             format,
             Some(over_blend()),
         )?;
-        self.composite_pipelines.insert(format, pipeline);
+        self.composite_pipelines.insert(
+            format,
+            CompositeEntry {
+                pipeline,
+                created_generation: self.generation,
+            },
+        );
         Ok(())
     }
 
@@ -635,7 +666,6 @@ impl BackdropBlur for WgpuBlur {
             )
         };
 
-        self.generation += 1;
         Ok(Some(WgpuPrepared {
             target_format: target_spec,
             generation: self.generation,
@@ -658,13 +688,14 @@ impl BackdropBlur for WgpuBlur {
             "Prepared is stale: a newer prepare clobbered the shared scratch before this handle \
              was recorded; v1 requires serial prepare→record per surface (K1)"
         );
-        let composite_pipeline = self
+        let composite_pipeline = &self
             .composite_pipelines
             .get(&prepared.target_format)
             .ok_or_else(|| BlurError::ResourceCreation {
                 stage: BlurStage::CompositePipeline,
                 source: "composite pipeline missing at record".into(),
-            })?;
+            })?
+            .pipeline;
 
         // Blur into the scratch (Gaussian ping-pong, or the dual-Kawase pyramid).
         self.record_blur(sink, &prepared.blur)?;
