@@ -224,16 +224,28 @@ impl OwnLoopRenderer {
     /// for `Bounded`) so a stale backdrop cannot be silently forgotten (§4.6 — the adapter, not
     /// the host, drives the repaint). `frame` carries the tessellated egui output + the target.
     ///
-    /// **Out-of-memory contract (native).** `backdrop-blur`'s own resource creation returns an
-    /// error on a device out-of-memory instead of panicking, split by whether the device survives.
-    /// The intermediate texture here, plus the blur backend's scratch **textures** and uniform
+    /// **Out-of-memory contract.** `backdrop-blur`'s own resource creation never reaches wgpu's
+    /// default (panicking) handler on a device out-of-memory; what differs by dispatch is how the
+    /// fault reaches the host.
+    ///
+    /// **Native** — the fault is this call's `Err`, split by whether the device survives. The
+    /// intermediate texture here, plus the blur backend's scratch **textures** and uniform
     /// **buffers**, return [`BlurError::DeviceOutOfMemory`] — recoverable in the common case: on
     /// that `Err` nothing has been submitted (the `?` returns before `queue.submit`), so do not
     /// present the frame, re-request a repaint, and retry unfrosted or shed surfaces (see that
     /// variant's mixed-site caveat for the narrow window where the device was lost anyway). The
     /// backend's **pipelines and bind groups** — including the per-frame bind groups — return
     /// [`BlurError::DeviceLost`]: wgpu has already invalidated the device, so tear it down and do
-    /// **not** retry on it. This is **not** a blanket "never panics" — allocations *inside*
+    /// **not** retry on it.
+    ///
+    /// **Web (WebGPU dispatch)** — the same creations run inside deferred scopes: a creation
+    /// fault cannot fail this call, and instead surfaces through the backend's
+    /// `WgpuBlur::take_fault`, which the host must read **every frame, including frames where
+    /// frosting is shed or skipped** (that read keeps fault delivery live). On a report: do not
+    /// trust the presented frost — re-request a repaint, retry unfrosted or shed surfaces. The
+    /// web path never reports `DeviceLost`; the host's device-lost callback is the loss signal.
+    ///
+    /// Either way this is **not** a blanket "never panics" — allocations *inside*
     /// `egui_wgpu::Renderer` (font-atlas growth in `update_texture`, vertex/index buffer growth in
     /// `update_buffers`/`render`) are third-party and cannot be scoped by this crate; an
     /// out-of-memory there still reaches wgpu's default (panicking) handler.

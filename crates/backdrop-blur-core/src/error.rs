@@ -33,12 +33,18 @@ pub enum BlurError {
     /// by an `OutOfMemory` error scope at the creating call. Distinct from the internal-invariant
     /// [`ResourceCreation`](Self::ResourceCreation) assertions. Carries no resource stage: an
     /// out-of-memory is a machine-state condition, and the recovery contract does not branch on which
-    /// resource failed. **Native-only:** on wasm the synchronous scope read is unsupported on the browser's default
-    /// WebGPU dispatch (its `pop()` is a deferred promise), so the own-loop path panics via this
-    /// crate's own guard rather than reaching wgpu's default handler. Covers `backdrop-blur`'s own creations only — allocations inside
-    /// `egui_wgpu` are outside this crate's reach. The creations wgpu treats as device-fatal on
+    /// resource failed. **Delivery differs by dispatch:** on native the scope resolves
+    /// synchronously, so this error is returned in-band from the creating call, before the handle
+    /// is consumed. On the web's WebGPU dispatch the scope resolves as a deferred promise;
+    /// construction awaits it (the async constructors return this error in-band), while a
+    /// frame-path fault is parked, generation-stamped, and delivered after the fact through the
+    /// wgpu backend's fault report (`WgpuBlur::take_fault`, read once per frame) — the same
+    /// variant with the same recovery meaning, at a later time. Covers `backdrop-blur`'s own creations only — allocations inside
+    /// `egui_wgpu` are outside this crate's reach. On native, the creations wgpu treats as device-fatal on
     /// out-of-memory (layouts, shader modules, pipelines, bind groups) report
-    /// [`DeviceLost`](Self::DeviceLost) instead.
+    /// [`DeviceLost`](Self::DeviceLost) instead; the web path never reports `DeviceLost` (no web
+    /// creation arm has been observed device-fatal — the host's device-lost callback remains the
+    /// loss signal there).
     ///
     /// Recoverable **in the common case** (a primary allocation failed; the device survives): do not
     /// present the frame, re-request a repaint, and retry unfrosted or shed surfaces. A few creations
@@ -66,7 +72,10 @@ pub enum BlurError {
     /// Reports only this crate's **own** OOM-induced loss. The host must keep its own
     /// `wgpu::Device` device-lost handling for every other cause (driver reset, TDR, losses inside
     /// `egui_wgpu`) — that handling is also the backstop for the narrow mixed-site window documented
-    /// on [`DeviceOutOfMemory`](Self::DeviceOutOfMemory).
+    /// on [`DeviceOutOfMemory`](Self::DeviceOutOfMemory). Never produced by the web
+    /// (WebGPU-dispatch) own-loop path — its creation faults are all reported as
+    /// `DeviceOutOfMemory`, so on the web the host's callback is the loss signal outright, as it
+    /// already is for native's mixed sites.
     ///
     /// **Migration (0.3.0):** new variant. `BlurError` is `#[non_exhaustive]`, so an existing `_`
     /// match arm still compiles — but a `_ => retry`-style arm silently absorbs this and retries on

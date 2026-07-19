@@ -465,11 +465,15 @@ that *does* expose a sampleable-backdrop hook drops in as an additive adapter cr
 - **Genuine validation / internal GPU faults (wgpu)** → **deliberately panic** (crate bugs — this crate
   builds its own descriptors). Only their out-of-memory *cause* is caught, at the creating call, before
   the invalid handle cascades.
-- **wasm (own-loop)** → the path now **compiles** for wasm32, but **native is the only supported runtime**:
-  it reads the `OutOfMemory` scope with a single synchronous poll, which the browser's default (WebGPU)
-  dispatch returns as a deferred promise, so the crate's own guard panics rather than capturing — it does
-  **not** fall through to wgpu's default handler. Web frosted glass remains the glow/WebGL2 grab-pass path;
-  the deferred-read design is tracked in `own-loop-wasm-device-fault-async`.
+- **wasm (own-loop)** → **supported on the browser's WebGPU dispatch** (0.3.0). Construction is async
+  and awaits every error scope (`WgpuBlur::new`, `prewarm_composite`, the adapter's async constructor) —
+  check-before-consume, faults returned in-band. The frame path pushes each scope, creates, and *calls*
+  pop synchronously, deferring only the await to a spawned task, so a frame never blocks and never
+  panics; deferred faults are generation-stamped, drained at the next frame (evicting the poisoned cache
+  entry so it is rebuilt and re-verified), and surfaced through `WgpuBlur::take_fault` — an every-frame
+  host obligation, shed or not. The web path never reports `DeviceLost` (no creation arm observed
+  device-fatal on this dispatch); the host's device-lost callback stays the loss signal. The measured
+  browser fault model and the executed probe live on `own-loop-wasm-device-fault-async`.
 - **Unsupported target format** → `Err(UnsupportedTarget)` from the lazy per-format pipeline build (M3).
 - **Resize / DPI change** → the `PingPongKey { size, levels }` chain is rebuilt; stale keys age out
   (the composite pipeline is keyed *separately* by target format — §4.4; the scratch key carries no format).

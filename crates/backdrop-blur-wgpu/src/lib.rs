@@ -19,15 +19,27 @@
 //!
 //! wgpu resource creation (textures, buffers, pipelines, bind groups) does **not** return `Result`;
 //! a fault is reported out-of-band through the device's error handler. This backend wraps every
-//! creation it performs in a per-call [`OutOfMemory`](wgpu::ErrorFilter::OutOfMemory) error scope and
-//! maps a captured allocation failure to [`BlurError::DeviceOutOfMemory`] (non-fatal kinds: the
-//! sampler, and the primary allocations of buffers/textures) or [`BlurError::DeviceLost`] (fatal
-//! kinds: layouts, shader modules, pipelines, bind groups — wgpu-core `device.lose()`s on their
-//! rejected allocation, so the device is already gone when the error is returned). On the **native**
-//! backend the fault is recorded synchronously during the create call, so the scope is read without
-//! blocking, and the result is checked (`?`) before the handle is consumed — so an out-of-memory
-//! handle never cascades into an uncatchable `Validation` error (**native-only**, see
-//! [`BlurError::DeviceOutOfMemory`]).
+//! creation it performs in a per-call [`OutOfMemory`](wgpu::ErrorFilter::OutOfMemory) error scope
+//! (the [`OomScope`] seam) and maps a captured allocation failure to
+//! [`BlurError::DeviceOutOfMemory`] (non-fatal kinds: the sampler, and the primary allocations of
+//! buffers/textures) or [`BlurError::DeviceLost`] (native fatal kinds: layouts, shader modules,
+//! pipelines, bind groups — wgpu-core `device.lose()`s on their rejected allocation, so the device
+//! is already gone when the error is returned). What differs by dispatch is *when the fault comes
+//! back*:
+//!
+//! - **Native:** the fault is recorded synchronously during the create call, so the scope is read
+//!   without blocking, and the result is checked (`?`) before the handle is consumed — an
+//!   out-of-memory handle never cascades into an uncatchable `Validation` error.
+//! - **Web (the browser's WebGPU dispatch):** the scope's `pop()` resolves as a deferred promise.
+//!   Construction awaits every scope (the async `WgpuBlur::new` and `prewarm_composite`), so
+//!   construction faults are still returned in-band, checked before use. On the frame path each
+//!   creation pushes its scope, creates, and *calls* pop synchronously — only the await is
+//!   deferred to a spawned task — so a frame never blocks and never panics. A captured fault is
+//!   parked generation-stamped in the backend's fault log; the next frame's drain evicts the
+//!   poisoned cache entry (so it is rebuilt and re-verified) and folds the fault into the report
+//!   the host reads via `WgpuBlur::take_fault` — an every-frame host obligation. The web path
+//!   never produces `DeviceLost`; the host's device-lost callback remains the loss signal.
+//!
 //! Genuine validation/internal faults are crate bugs (this crate builds its own descriptors) and are
 //! deliberately left to wgpu's default panic handler. The other error returned synchronously is
 //! [`BlurError::UnsupportedTarget`], checked against an allowlist before any GPU call.
@@ -195,7 +207,8 @@ impl WgpuBlur {
     ///
     /// Every creation is wrapped in a per-call [`OutOfMemory`](wgpu::ErrorFilter::OutOfMemory) error
     /// scope, so a device out-of-memory at construction returns an error instead of panicking
-    /// (**native-only** — see the module-level error-handling note): [`BlurError::DeviceLost`] for
+    /// (this is the native constructor; the web twin awaits the same scopes — see the module-level
+    /// error-handling note): [`BlurError::DeviceLost`] for
     /// the layout/shader/pipeline creations (fatal arms — wgpu has already invalidated the device),
     /// or [`BlurError::DeviceOutOfMemory`] for the sampler (the device survives). A genuine
     /// validation fault (a malformed shader or layout descriptor) is a crate bug and still panics via
@@ -1029,7 +1042,7 @@ impl OomScope<'_> {
 
     /// The one public creation route, for the egui adapter's offscreen intermediate texture:
     /// `scoped` with the fixed non-fatal arm and intermediate attribution, so the keyed
-    /// [`SlotKey`]/[`OomOutcome`] internals stay private. Native: a device out-of-memory is this
+    /// `SlotKey`/`OomOutcome` internals stay private. Native: a device out-of-memory is this
     /// call's `Err` ([`BlurError::DeviceOutOfMemory`]), returned before the texture is consumed.
     /// Web (WebGPU dispatch): the deferred fault is parked and later surfaced through the
     /// backend's fault report, attributed to [`FaultSlot::Intermediate`].
@@ -1130,7 +1143,9 @@ fn describe(err: &(dyn std::error::Error + 'static)) -> String {
 /// invalid (`device.lose()`) inside the create call. On the `DeviceLost` arm the device is gone at
 /// return; that is the capture instant, not a re-checked liveness status. Only out-of-memory is
 /// scoped; validation and internal faults are crate bugs left to wgpu's default panic handler.
-/// Native-only (see [`poll_once`]). The result MUST be checked (`?`) before it is consumed by any
+/// Compiled only for the native dispatch, whose scopes resolve synchronously (see
+/// [`poll_once`]); the wasm32 build's creations go through the deferred twins instead. The result
+/// MUST be checked (`?`) before it is consumed by any
 /// later call — an out-of-memory handle consumed downstream raises an uncatchable `Validation`
 /// error (wgpu's contagious invalidity). Push, create, and pop run on one thread with nothing
 /// yielding between, because a [`wgpu::ErrorScopeGuard`] is thread-local (`!Send`).
@@ -1153,7 +1168,9 @@ fn scoped_oom<T>(
             },
         }),
         None => panic!(
-            "backdrop-blur: OOM error scope did not resolve synchronously; native-only path (design v5)"
+            "backdrop-blur: internal contract violation — the native dispatch resolved an \
+             out-of-memory error scope asynchronously (the wasm32 build contains no synchronous \
+             scope read, so this can only be a native wgpu backend change)"
         ),
     }
 }
