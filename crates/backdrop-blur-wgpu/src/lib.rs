@@ -120,7 +120,10 @@ struct ScratchChain {
     last_used_frame: u64,
     /// The backend generation active when this chain was created; the wasm32 fault drain compares
     /// it against a deferred fault's stamp to tell a live fault from a stale one.
-    #[expect(dead_code, reason = "read only by the wasm32 fault drain")]
+    #[cfg_attr(
+        not(target_arch = "wasm32"),
+        expect(dead_code, reason = "read only by the wasm32 fault drain")
+    )]
     created_generation: u64,
 }
 
@@ -133,7 +136,10 @@ struct PyramidChain {
     last_used_frame: u64,
     /// The backend generation active when this chain was created; the wasm32 fault drain compares
     /// it against a deferred fault's stamp to tell a live fault from a stale one.
-    #[expect(dead_code, reason = "read only by the wasm32 fault drain")]
+    #[cfg_attr(
+        not(target_arch = "wasm32"),
+        expect(dead_code, reason = "read only by the wasm32 fault drain")
+    )]
     created_generation: u64,
 }
 
@@ -142,7 +148,10 @@ struct PyramidChain {
 struct CompositeEntry {
     pipeline: wgpu::RenderPipeline,
     /// The backend generation active when this pipeline was built.
-    #[expect(dead_code, reason = "read only by the wasm32 fault drain")]
+    #[cfg_attr(
+        not(target_arch = "wasm32"),
+        expect(dead_code, reason = "read only by the wasm32 fault drain")
+    )]
     created_generation: u64,
 }
 
@@ -386,6 +395,10 @@ impl WgpuBlur {
     /// `HashMap` entry drops its `wgpu::TextureView`s, releasing the underlying textures by refcount
     /// — no explicit GPU free. The stale-set decision is the pure, core-shared [`evict_decision`].
     fn begin_frame(&mut self) {
+        // Web: invalidate poisoned cache entries BEFORE the generation bump and the retention
+        // eviction, so nothing this frame's `ensure_*` serves can be a faulted resource.
+        #[cfg(target_arch = "wasm32")]
+        self.absorb_faults();
         self.frame = self.frame.wrapping_add(1);
         self.generation += 1;
         let stale = evict_decision(
@@ -523,6 +536,107 @@ impl WgpuBlur {
                 ],
             })
         })
+    }
+}
+
+// --- The web fault state (deferred reports) ---
+
+#[cfg(target_arch = "wasm32")]
+impl WgpuBlur {
+    /// Drain every parked backend fault (all but the adapter's `Intermediate` records, which
+    /// [`Self::drain_intermediate_faults`] owns), execute each verdict — evict the named cache
+    /// entry on a stamp match, fold reportable faults into the host report, drop stale ones —
+    /// and leave the log empty of backend records. Idempotent, and called from **two sites**:
+    /// `begin_frame`, so a poisoned entry is invalidated before this frame's `ensure_*` can
+    /// serve it; and [`Self::take_fault`], so fault delivery stays live even when the host sheds
+    /// all frosting and `prepare` never runs. The staleness rule compares stamps, not the
+    /// current generation, so the call order is immaterial.
+    fn absorb_faults(&mut self) {
+        let drained = self
+            .faults
+            .borrow_mut()
+            .drain_where(|fault| fault.slot != SlotKey::Intermediate);
+        for fault in drained {
+            let entry_stamp = match fault.slot {
+                SlotKey::Scratch(key) => self.scratch.get(&key).map(|c| c.created_generation),
+                SlotKey::Pyramid(key) => self.pyramids.get(&key).map(|c| c.created_generation),
+                SlotKey::Composite(format) => self
+                    .composite_pipelines
+                    .get(&format)
+                    .map(|e| e.created_generation),
+                SlotKey::Uniform | SlotKey::BindGroup | SlotKey::Intermediate => None,
+            };
+            match fault::DrainAction::decide(fault.slot, fault.generation, entry_stamp) {
+                fault::DrainAction::EvictAndReport => {
+                    self.evict(fault.slot);
+                    self.faults
+                        .borrow_mut()
+                        .fold_report(fault.slot.kind(), fault.message);
+                }
+                fault::DrainAction::ReportOnly => {
+                    self.faults
+                        .borrow_mut()
+                        .fold_report(fault.slot.kind(), fault.message);
+                }
+                fault::DrainAction::StaleDrop => {}
+            }
+        }
+    }
+
+    /// Remove the cache entry a keyed slot names; a transient slot has nothing cached (total —
+    /// no panic path).
+    fn evict(&mut self, slot: SlotKey) {
+        match slot {
+            SlotKey::Scratch(key) => {
+                self.scratch.remove(&key);
+            }
+            SlotKey::Pyramid(key) => {
+                self.pyramids.remove(&key);
+            }
+            SlotKey::Composite(format) => {
+                self.composite_pipelines.remove(&format);
+            }
+            SlotKey::Uniform | SlotKey::BindGroup | SlotKey::Intermediate => {}
+        }
+    }
+
+    /// The host's once-per-frame read of the deferred fault state: drain and absorb everything
+    /// pending, then hand over (and clear) the folded [`FaultReport`].
+    ///
+    /// **Host contract — call this every frame, including frames where frosting is shed or
+    /// skipped.** This call is what keeps fault delivery live: `prepare` also absorbs, but a
+    /// host that responds to a report by shedding surfaces stops calling `prepare`, and without
+    /// this read the state could never progress back to "clean". On `Some`: do not trust the
+    /// presented frost — re-request a repaint, and retry unfrosted or shed surfaces. Delivery is
+    /// eventual: a fault normally surfaces on the next frame's read, later under pressure.
+    ///
+    /// Sharp edge: an error-scope read still in flight when the device dies resolves as "no
+    /// fault", so `None` is **not** a device-liveness signal — the host's own
+    /// `set_device_lost_callback` is. (Similarly, if the host abandons the render loop entirely,
+    /// pending records simply sit undrained — acceptable, since nothing is being presented.)
+    pub fn take_fault(&mut self) -> Option<FaultReport> {
+        self.absorb_faults();
+        self.faults.borrow_mut().take_report()
+    }
+
+    /// Drain any parked faults for the adapter's offscreen intermediate texture, fold them into
+    /// the host report, and return whether any were drained — `true` means the adapter must drop
+    /// its cached intermediate so the faulted texture is never served again (it is recreated the
+    /// same frame). The intermediate is size-keyed with no generation stamp, so a late stale
+    /// report can at worst drop one healthy intermediate for one recreation — correctness is
+    /// preserved, one texture is rebuilt unnecessarily.
+    pub fn drain_intermediate_faults(&mut self) -> bool {
+        let drained = self
+            .faults
+            .borrow_mut()
+            .drain_where(|fault| fault.slot == SlotKey::Intermediate);
+        let any_drained = !drained.is_empty();
+        for fault in drained {
+            self.faults
+                .borrow_mut()
+                .fold_report(FaultSlot::Intermediate, fault.message);
+        }
+        any_drained
     }
 }
 
@@ -904,7 +1018,7 @@ impl OomScope<'_> {
         wasm_bindgen_futures::spawn_local(async move {
             if let Some(err) = pending.await {
                 faults.borrow_mut().record(fault::PendingFault {
-                    slot_kind: slot.kind(),
+                    slot,
                     generation,
                     message: describe(&err),
                 });

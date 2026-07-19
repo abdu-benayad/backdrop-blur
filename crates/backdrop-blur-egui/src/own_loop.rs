@@ -265,6 +265,14 @@ impl OwnLoopRenderer {
             &frame.screen,
         );
 
+        // Web: a deferred fault on a previous frame's intermediate must drop the cached texture
+        // before it can be served again — it is recreated just below. (Size-keyed with no stamp:
+        // at worst a late stale report drops one healthy intermediate for one recreation.)
+        #[cfg(target_arch = "wasm32")]
+        if blur.drain_intermediate_faults() {
+            self.intermediate = None;
+        }
+
         // One owned view of the intermediate, used by reference for the egui→intermediate pass
         // (the pass clones it via forget_lifetime) and then moved into the blur `SourceView`.
         // The creation runs through the backend's OomScope (borrowing only `device`, so `blur`

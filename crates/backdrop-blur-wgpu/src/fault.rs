@@ -92,20 +92,62 @@ pub struct FaultReport {
 /// it is flattened at capture (K1) and re-boxed into [`BlurError`] only when folded into the
 /// host report.
 #[cfg_attr(
-    not(test),
+    all(not(test), not(target_arch = "wasm32")),
     expect(
         dead_code,
-        reason = "fields are read only by the fault drain (lands with the absorb step); unit-tested natively"
+        reason = "constructed and drained only by the wasm32 deferred collector; unit-tested natively"
     )
 )]
 pub(crate) struct PendingFault {
-    /// The host-facing kind of the resource whose scope caught the fault.
-    pub(crate) slot_kind: FaultSlot,
+    /// The keyed slot whose scope caught the fault; the drain uses it to find (and, on a stamp
+    /// match, evict) the poisoned cache entry.
+    pub(crate) slot: SlotKey,
     /// The backend generation active when the faulted resource was created; the drain compares
     /// it against the named cache entry's stamp to tell a live fault from a stale one.
     pub(crate) generation: u64,
     /// The flattened backend error text.
     pub(crate) message: String,
+}
+
+/// What the backend does with one drained fault — the pure half of the drain, decided from the
+/// fault's slot and the named cache entry's current stamp so it is unit-testable with no GPU.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum DrainAction {
+    /// The faulted resource is the one still cached: evict it (the next request recreates and
+    /// re-verifies) and fold the fault into the host report.
+    EvictAndReport,
+    /// A per-frame transient (or the adapter's intermediate) faulted: nothing cached to evict,
+    /// but the presented frame was untrustworthy — fold the fault into the host report.
+    ReportOnly,
+    /// The cached entry the fault names was already replaced or evicted: the fault is about a
+    /// resource no longer served, so it requires no action at all.
+    StaleDrop,
+}
+
+#[cfg_attr(
+    all(not(test), not(target_arch = "wasm32")),
+    expect(
+        dead_code,
+        reason = "executed only by the wasm32 fault drain; unit-tested natively"
+    )
+)]
+impl DrainAction {
+    /// Decide a drained fault's action. `entry_stamp` is the `created_generation` of the cache
+    /// entry the fault's slot names, if one is currently cached: keyed slots evict-and-report
+    /// iff the entry exists with a stamp matching the fault's generation (the poisoned resource
+    /// is the one still being served) and stale-drop otherwise; transient slots always
+    /// report-only.
+    pub(crate) fn decide(slot: SlotKey, fault_generation: u64, entry_stamp: Option<u64>) -> Self {
+        match slot {
+            SlotKey::Scratch(_) | SlotKey::Pyramid(_) | SlotKey::Composite(_) => {
+                match entry_stamp {
+                    Some(stamp) if stamp == fault_generation => Self::EvictAndReport,
+                    Some(_) | None => Self::StaleDrop,
+                }
+            }
+            SlotKey::Uniform | SlotKey::BindGroup | SlotKey::Intermediate => Self::ReportOnly,
+        }
+    }
 }
 
 /// The shared collector: parked scope outcomes plus the folded host report. Spawned tasks
@@ -117,10 +159,10 @@ pub(crate) struct FaultLog {
 }
 
 #[cfg_attr(
-    not(test),
+    all(not(test), not(target_arch = "wasm32")),
     expect(
         dead_code,
-        reason = "the drain/report half is called only by the wasm32 absorb step (lands next); unit-tested natively"
+        reason = "driven only by the wasm32 deferred collector and its drain; unit-tested natively"
     )
 )]
 impl FaultLog {
@@ -182,9 +224,16 @@ pub(crate) type SharedFaultLog = std::rc::Rc<std::cell::RefCell<FaultLog>>;
 mod tests {
     use super::*;
 
-    fn pending(slot_kind: FaultSlot, generation: u64, message: &str) -> PendingFault {
+    fn ping_pong_key() -> PingPongKey {
+        PingPongKey {
+            size: [8, 8],
+            levels: 1,
+        }
+    }
+
+    fn pending(slot: SlotKey, generation: u64, message: &str) -> PendingFault {
         PendingFault {
-            slot_kind,
+            slot,
             generation,
             message: message.to_owned(),
         }
@@ -222,23 +271,62 @@ mod tests {
     #[test]
     fn drain_where_partitions_and_keeps_the_rest() {
         let mut log = FaultLog::default();
-        log.record(pending(FaultSlot::Scratch, 3, "scratch oom"));
-        log.record(pending(FaultSlot::Intermediate, 4, "intermediate oom"));
-        log.record(pending(FaultSlot::Pyramid, 5, "pyramid oom"));
+        log.record(pending(SlotKey::Scratch(ping_pong_key()), 3, "scratch oom"));
+        log.record(pending(SlotKey::Intermediate, 4, "intermediate oom"));
+        log.record(pending(SlotKey::Pyramid(ping_pong_key()), 5, "pyramid oom"));
 
-        let drained = log.drain_where(|fault| fault.slot_kind != FaultSlot::Intermediate);
+        let drained = log.drain_where(|fault| fault.slot != SlotKey::Intermediate);
         assert_eq!(drained.len(), 2);
-        assert!(
-            drained
-                .iter()
-                .all(|f| f.slot_kind != FaultSlot::Intermediate)
-        );
+        assert!(drained.iter().all(|f| f.slot != SlotKey::Intermediate));
 
         let rest = log.drain_where(|_| true);
         assert_eq!(rest.len(), 1);
-        assert_eq!(rest[0].slot_kind, FaultSlot::Intermediate);
+        assert_eq!(rest[0].slot, SlotKey::Intermediate);
         assert_eq!(rest[0].generation, 4);
         assert_eq!(rest[0].message, "intermediate oom");
+    }
+
+    #[test]
+    fn drain_action_evicts_only_on_a_matching_stamp() {
+        let scratch = SlotKey::Scratch(ping_pong_key());
+        assert_eq!(
+            DrainAction::decide(scratch, 7, Some(7)),
+            DrainAction::EvictAndReport
+        );
+        // The cached entry was recreated after the faulted one: the fault names a resource no
+        // longer served.
+        assert_eq!(
+            DrainAction::decide(scratch, 7, Some(9)),
+            DrainAction::StaleDrop
+        );
+        // The entry was already evicted (retention or an earlier drain).
+        assert_eq!(
+            DrainAction::decide(scratch, 7, None),
+            DrainAction::StaleDrop
+        );
+        assert_eq!(
+            DrainAction::decide(
+                SlotKey::Composite(wgpu::TextureFormat::Bgra8Unorm),
+                2,
+                Some(2)
+            ),
+            DrainAction::EvictAndReport
+        );
+        assert_eq!(
+            DrainAction::decide(SlotKey::Pyramid(ping_pong_key()), 3, Some(1)),
+            DrainAction::StaleDrop
+        );
+    }
+
+    #[test]
+    fn drain_action_always_reports_transients() {
+        for slot in [SlotKey::Uniform, SlotKey::BindGroup, SlotKey::Intermediate] {
+            assert_eq!(DrainAction::decide(slot, 5, None), DrainAction::ReportOnly);
+            assert_eq!(
+                DrainAction::decide(slot, 5, Some(5)),
+                DrainAction::ReportOnly
+            );
+        }
     }
 
     #[test]
