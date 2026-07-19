@@ -41,7 +41,10 @@ use std::collections::HashMap;
 use backdrop_blur_core::{BackdropBlur, BlurError, BlurRequest, BlurStage, ResolvedMask};
 
 mod cache;
+mod fault;
 mod uniforms;
+
+pub use fault::{FaultReport, FaultSlot};
 
 use cache::{
     PingPongKey, RETENTION_FRAMES, SCRATCH_FORMAT, TargetEncoding, backdrop_uv_remap,
