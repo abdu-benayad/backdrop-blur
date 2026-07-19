@@ -1,0 +1,21 @@
+[package]
+name = "webgpu-fault-probe"
+version = "0.0.0"
+edition = "2024"
+publish = false
+description = "Executed browser verification of the own-loop web fault path: drives the real backdrop-blur-wgpu crate on a real WebGPU device and demonstrates async construction, clean frames, deferred DeviceOutOfMemory reporting under accumulated scratch pressure, fault-driven recovery, and device survival. Excluded from the workspace, like the other examples."
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+backdrop-blur-core = { path = "../../crates/backdrop-blur-core" }
+backdrop-blur-wgpu = { path = "../../crates/backdrop-blur-wgpu" }
+wgpu = "29"
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+js-sys = "0.3"
+web-sys = { version = "0.3", features = ["Window", "Document", "Element", "Node", "console"] }
+# Panics print to the console instead of a bare `unreachable`, so the probe's
+# "the frame path never panics" claim is falsifiable in the log.
+console_error_panic_hook = "0.1"

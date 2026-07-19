@@ -161,11 +161,15 @@ jobs:
         run: cargo test -p backdrop-blur-egui --no-default-features --features gl-snapshots -- --test-threads=1
 
   wasm:
-    # The library crates must stay buildable for wasm32 (compile-only). glow is the design's
-    # web-first WebGL2 target; the wgpu backend + own-loop -egui adapter are guarded here so E1's
-    # error-boxing portability (BackendError's Send+Sync bound vs wgpu::Error on wasm) can't regress
-    # uncaught. The headless-Chromium WebGL2 readback tier is a separate (deferred) job.
-    name: wasm32 build (library compile portability)
+    # The library crates must stay buildable for wasm32 (compile-only), and the browser fault
+    # probe must keep compiling against them. glow is the design's web-first WebGL2 target; the
+    # wgpu backend + own-loop -egui adapter are guarded here so E1's error-boxing portability
+    # (BackendError's Send+Sync bound vs wgpu::Error on wasm) can't regress uncaught. The
+    # webgpu-fault-probe example is the executed browser verification of the deferred fault path
+    # (a documented local procedure — behavioral wasm verification stays out of CI); this job
+    # only guards its compile. The headless-Chromium WebGL2 readback tier is a separate
+    # (deferred) job.
+    name: wasm32 build (library + probe compile portability)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -179,6 +183,8 @@ jobs:
         run: cargo build -p backdrop-blur-wgpu --target wasm32-unknown-unknown
       - name: build the egui own-loop adapter for wasm32
         run: cargo build -p backdrop-blur-egui --target wasm32-unknown-unknown
+      - name: build the browser fault probe (executed locally; compile-guarded here)
+        run: cargo build --manifest-path examples/webgpu-fault-probe/Cargo.toml --target wasm32-unknown-unknown
 
   examples:
     name: excluded examples (build only)
